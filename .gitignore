@@ -1,0 +1,3 @@
+# 测试脚本用的 junction（指向仓库自身与外部 ETL）与编译产物
+tests/include/
+tests/out/
