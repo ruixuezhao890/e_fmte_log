@@ -335,6 +335,9 @@ format("[{}]", std::string_view(raw, 3));   // "[a\0b]" 里的 3 个字符原样
 
 **方式 1：结构化成成员打印（最省事）** —— 输出 `{x=10, y=20}`
 
+> 嫌下面这种写法要抄"类型 + 名字 + 字符串"三遍？直接用 [5.4 自动派生](#54-自动派生不用再抄类型和名字推荐)：
+> `E_FMT_FORMATTER_FIELDS(point, x, y)` 一行搞定，不用写类型也不用写字符串。
+
 ```cpp
 struct Point { int x, y; };
 E_FMT_FORMATTER_2(Point, int, x, "x", int, y, "y");
@@ -413,7 +416,60 @@ E_FMT_FORMATTER_FN(Packet, [](format_context& ctx, const format_specs&, const Pa
 });
 ```
 
-### 5.4 容器与 tuple（默认只在宿主可用）
+### 5.4 自动派生：不用再抄类型和名字（推荐）
+
+老写法的痛点是**同一个信息抄三遍**：成员类型、成员名、显示用的字符串。抄错类型是编译错误，
+抄错字符串就是输出错——而且没法检查：
+
+```cpp
+// 旧写法：三处信息，任何一处笔误都靠人眼发现
+E_FMT_FORMATTER_2(point, int, x, "x", int, y, "y");
+```
+
+EFmt 提供三个"派生"宏，把三处压成一处（对标 Rust 的 `#[derive(Debug)]`）：
+
+| 宏 | 你要写的 | 输出示例 | 适用 |
+|----|---------|---------|------|
+| `E_FMT_FORMATTER_FIELDS(Type, a, b, …)` | 只列字段名 | `{x=10, y=20}` | **首选**，最多 12 个字段 |
+| `E_FMT_FORMATTER_AUTO(Type)` | 什么都不写 | `point(10, 20)` | 简单聚合体，改结构体不用同步 |
+| `E_FMT_FORMATTER_AUTO_N(Type, N)` | 字段个数 | 同上 | 成员里有 C 型数组时 |
+| `E_FMT_FORMATTER_ENUM(Type, A, B, …)` | 枚举取值名 | `green` | `enum` / `enum class` |
+
+```cpp
+struct point { int x, y; };
+E_FMT_FORMATTER_FIELDS(point, x, y);      // 类型由 &point::x 推导，显示名由 #x 生成
+println_info("{}", point{10, 20});        // {x=10, y=20}
+
+struct reading { float temp; float hum; unsigned ts; };
+E_FMT_FORMATTER_AUTO(reading);            // 连字段都不用列
+println_info("{}", reading{25.5f, 60.0f, 12345u});   // reading(25.5, 60, 12345)
+
+enum class color { red, green, blue };
+E_FMT_FORMATTER_ENUM(color, red, green, blue);
+println_info("{}", color::green);          // green
+println_info("{:>8}", color::green);       // 支持宽度/对齐 -> "   green"
+println_info("{}", static_cast<color>(9)); // 没列出的取值 -> 底层整数 9
+```
+
+**要点与边界**
+
+* 宏请写在**类型所在的命名空间里**（类型在全局就写在全局）：库通过 ADL 找它。
+* 因此**类型名不会和库内部符号冲突** —— 旧宏展开时会进 `e_fmt::detail` 命名空间，
+  一个叫 `color`/`style` 的用户类型会被解析成库自己的同名类型（静默格式化错对象）。
+* `FIELDS` / `AUTO` **忽略外层格式规范**（和旧宏一致）；`ENUM` 尊重宽度/对齐。
+* `AUTO` 只支持简单聚合体：公开成员、无基类、无自定义构造函数。
+  成员里有 **C 型数组**（`char name[8]`）时字段数推导会偏大（花括号省略），
+  这时用 `E_FMT_FORMATTER_AUTO_N(Type, 字段个数)` 显式给出个数：
+
+  ```cpp
+  struct frame { unsigned len; char payload[16]; };
+  E_FMT_FORMATTER_AUTO_N(frame, 2);
+  ```
+
+* 枚举没列出的取值按**底层类型**打印（`unsigned char` 的枚举打印 255 而不是 -1）。
+* 老的 `E_FMT_FORMATTER_1/2/3` / `E_FMT_FORMATTER_FN` 照常可用，不需要改动既有代码。
+
+### 5.5 容器与 tuple（默认只在宿主可用）
 
 ```cpp
 std::vector<int> v{1, 2, 3};
@@ -863,8 +919,18 @@ E_FMT_FORMATTER_FN(Rgb, [](format_context& ctx, const format_specs&, const Rgb& 
 ```
 
 **Q22：能打印 `enum class` 吗？**
-不能直接打（没有 formatter，会退化成 `obj@0x...`）。加一个转换函数再打，或用
-`E_FMT_FORMATTER_FN(MyEnum, ...)` 里 `switch` 成字符串。
+用 `E_FMT_FORMATTER_ENUM(MyEnum, A, B, C);` 一行（见 5.4），输出 `A`/`B`/`C`，
+没列出的取值打印底层整数。不加这个宏的话，`enum class` 会打印成 `obj@0x...`，
+无作用域枚举会打印数字。
+
+**Q23：`E_FMT_FORMATTER_AUTO` 报 `N names provided for structured binding … decomposes into M elements`？**
+该类型里有 C 型数组成员，字段数被花括号省略（brace elision）算大了。两种改法：
+`E_FMT_FORMATTER_AUTO_N(Type, M)`（M 用报错里给出的那个数字），或改用
+`E_FMT_FORMATTER_FIELDS(Type, 字段…)`。
+
+**Q24：自动派生的宏为什么不能写在别的命名空间里？**
+库靠 ADL（实参相关查找）找 `efmt_derive_format`，而 ADL 只搜索"实参类型所属的命名空间"。
+把宏写在类型所在的命名空间（类型在全局就写在全局）即可。
 
 ---
 
@@ -1025,6 +1091,11 @@ E_FMT_FORMATTER_2(Type, T1, m1, "n1", T2, m2, "n2")
 E_FMT_FORMATTER_3(Type, T1, m1, "n1", T2, m2, "n2", T3, m3, "n3")
 E_FMT_FORMATTER_FN(Type, lambda)
 
+E_FMT_FORMATTER_FIELDS(Type, m1, m2, ...)   // 只列字段名（≤12），名字自动转字符串
+E_FMT_FORMATTER_AUTO(Type)                  // 简单聚合体：字段全自动
+E_FMT_FORMATTER_AUTO_N(Type, count)         // 有 C 型数组成员时显式给字段个数
+E_FMT_FORMATTER_ENUM(Type, V1, V2, ...)     // 枚举取值 → 名字（≤12）
+
 E_FMT_STR("literal")            E_FMT_DECLARE_STR(name, "literal")
 
 with_color(color)   with_colors(fg, bg)   with_style(style)   style_a | style_b
@@ -1146,6 +1217,18 @@ g++ -std=c++17 -O2 -Itests/include -DEFMT_USE_LIBC_PRINTF=0 -DEFMT_FLOAT_CHECK_I
     交叉编译体积报告
 
 ---
+
+- **v1.5** 自定义类型自动派生（对标 Rust 的 `#[derive(Debug)]`）
+  - 新增 `format_derive.hpp`：`E_FMT_FORMATTER_FIELDS`（只列字段名，类型与显示名自动）、
+    `E_FMT_FORMATTER_AUTO` / `_AUTO_N`（纯聚合体零声明，输出 `Type(a, b, c)`）、
+    `E_FMT_FORMATTER_ENUM`（枚举取值转名字，未列出时打印底层整数）
+  - 宏改为展开成自由函数（ADL 定制点）：不再进 `e_fmt::detail` 命名空间，
+    用户类型名不会被库内部同名符号（`detail::color`/`detail::style` 等）静默遮蔽
+  - 枚举现在能正确走到格式化器：此前无作用域枚举会被 `ostream` 的 `operator<<(int)`
+    抢走（隐式转 int），`E_FMT_FORMATTER_ENUM`/自定义 `formatter<Enum>` 都轮不到
+  - `E_FMT_FORMATTER_AUTO` 用不上时给的是可操作的编译错误（提示改用 `_FIELDS`/`_AUTO_N`）
+  - 测试：`tests/efmt_derive_check.cpp`（宿主 + 嵌入式两种配置）、
+    `tests/efmt_compile_fail_auto.cpp`（非聚合体必须编译失败）
 
 ## 许可证
 

@@ -29,6 +29,8 @@ if ($EtlInclude) {
     if (Test-Path $etlLink) { cmd /c rmdir "$etlLink" | Out-Null }
     New-Item -ItemType Junction -Path $etlLink -Target $EtlInclude | Out-Null
 }
+# 注意：删 junction 只能用不带 /s 的 rmdir（cmd /c rmdir "路径"）。
+# rmdir /s 会跟着 junction 进到目标目录里，把目标目录的内容删掉。
 $hasEtl = Test-Path (Join-Path $etlLink 'expected.h')
 if (-not $hasEtl) {
     Write-Host "note: no ETL at $etlLink - skipping the elog integration steps (-EtlInclude to enable)"
@@ -103,6 +105,20 @@ if (Invoke-EfmtBuild 'minimal configuration (no float, 4 args)' $tinyArgs) {
     Invoke-EfmtRun 'minimal configuration' $tiny
 }
 
+# 自定义类型自动派生（AUTO / FIELDS / ENUM）
+$deriveExe = Join-Path $out 'efmt_derive_check.exe'
+$deriveArgs = @('-std=c++17') + $baseArgs +
+    @((Join-Path $PSScriptRoot 'efmt_derive_check.cpp'), '-o', $deriveExe)
+if (Invoke-EfmtBuild 'derived formatters (AUTO / FIELDS / ENUM)' $deriveArgs) {
+    Invoke-EfmtRun 'derived formatters' $deriveExe
+}
+
+$deriveEmbExe = Join-Path $out 'efmt_derive_check_embedded.exe'
+$deriveEmbArgs = @('-std=c++17') + $baseArgs + @('-DEFMT_ENABLE_HOSTED=0', (Join-Path $PSScriptRoot 'efmt_derive_check.cpp'), '-o', $deriveEmbExe)
+if (Invoke-EfmtBuild 'derived formatters (embedded configuration)' $deriveEmbArgs) {
+    Invoke-EfmtRun 'derived formatters (embedded)' $deriveEmbExe
+}
+
 # 手册里的示例代码：跑一遍，文档与实现脱节时这里先红
 $manualExe = Join-Path $out 'efmt_manual_examples.exe'
 $manualArgs = @('-std=c++17') + $baseArgs +
@@ -114,6 +130,8 @@ if (Invoke-EfmtBuild 'manual examples (docs stay honest)' $manualArgs) {
 Invoke-EfmtCompileFail -Name 'mismatched argument count' -ExpectedPattern 'Number of arguments does not match format string' -Arguments @('-std=c++17', '-O2', "-I$include", (Join-Path $PSScriptRoot 'efmt_compile_fail.cpp'), '-o', (Join-Path $out 'compile_fail.exe'))
 
 Invoke-EfmtCompileFail -Name 'float argument with EFMT_ENABLE_FLOAT=0' -ExpectedPattern 'EFMT_ENABLE_FLOAT=0' -Arguments @('-std=c++17', '-O2', "-I$include", '-DEFMT_ENABLE_HOSTED=0', '-DEFMT_ENABLE_FLOAT=0', (Join-Path $PSScriptRoot 'efmt_compile_fail_float.cpp'), '-o', (Join-Path $out 'compile_fail_float.exe'))
+
+Invoke-EfmtCompileFail -Name 'AUTO on a non-aggregate type' -ExpectedPattern 'E_FMT_FORMATTER_AUTO 只能用于聚合体' -Arguments @('-std=c++17', '-O2', "-I$include", (Join-Path $PSScriptRoot 'efmt_compile_fail_auto.cpp'), '-o', (Join-Path $out 'compile_fail_auto.exe'))
 
 $elog = Join-Path $root 'elog\elog.hpp'
 if ((Test-Path $elog) -and $hasEtl) {

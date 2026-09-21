@@ -590,9 +590,32 @@ void format_custom_wrapper(format_context &ctx, const format_specs &specs,
 // Custom types are stored as pointers to the caller's object: the object lives
 // until the end of the whole format() expression, so no copy (and no side
 // storage) is needed, and nested format() calls cannot clobber each other.
+// 枚举单独一条入口：否则"无作用域枚举 -> int"的隐式转换会让非模板的
+// make_format_arg(int) 抢走参数，E_FMT_FORMATTER_ENUM / formatter<Enum> 永远轮不到。
+//   有格式化器（派生的或用户特化的）-> 走格式化器
+//   没有                            -> 保持历史行为：按底层整数打印（比 obj@0x... 有用）
+template <typename T, typename = std::enable_if_t<std::is_enum_v<T>>>
+inline format_arg make_format_arg(const T &value) {
+  using underlying = std::underlying_type_t<T>;
+  if constexpr (has_derived_formatter_v<T> || has_formatter_specialization_v<T>) {
+    format_arg arg;
+    arg.type = arg_type::pointer;
+    arg.value.pointer = static_cast<const void *>(&value);
+    arg.formatter = format_custom_wrapper<T>;
+    return arg;
+  } else if constexpr (std::is_signed_v<underlying>) {
+    return format_arg::make_integral(
+        static_cast<int64_t>(static_cast<underlying>(value)), format_int64_wrapper);
+  } else {
+    return format_arg::make_uintegral(
+        static_cast<uint64_t>(static_cast<underlying>(value)), format_uint64_wrapper);
+  }
+}
+
 template <typename T>
 inline std::enable_if_t<
     !std::is_arithmetic_v<std::decay_t<T>> &&
+    !std::is_enum_v<std::decay_t<T>> &&
     !std::is_same_v<std::decay_t<T>, bool> &&
     !std::is_same_v<std::decay_t<T>, const char*> &&
     !std::is_same_v<std::decay_t<T>, char> &&
@@ -618,5 +641,9 @@ make_format_arg(T &&value) {
 }
 
 } // namespace e_fmt::detail
+
+// 自定义类型的自动派生（E_FMT_FORMATTER_AUTO / _FIELDS / _ENUM）。
+// 放在最后包含：这些宏展开时会用到上面定义好的 formatter / integral_formatter。
+#include "format_derive.hpp"
 
 #endif // FORMATTER_HPP

@@ -75,15 +75,45 @@ inline void write_hex_address(format_context &ctx, const format_specs &specs,
 }
 
 // ============================================================================
+// 派生格式化函数（ADL 定制点）
+// ============================================================================
+// 自动派生的宏（E_FMT_FORMATTER_AUTO / _FIELDS / _ENUM）展开出来的是一个**自由函数**：
+//
+//   void efmt_derive_format(const MyType&, format_context&, const format_specs&);
+//
+// 库这边用 ADL 找它。这样做的原因：宏不必再打开 e_fmt::detail 命名空间，用户类型名
+// 就不会被库内部同名符号（如 detail::color / detail::style）遮蔽 —— 旧宏那样展开时，
+// 一个叫 color 的用户类型会静默给库自己的枚举加格式化器。
+namespace derive_probe {
+void efmt_derive_format();  // 占位声明：保证名字在解析期可见（不定义，仅参与查找）
+} // namespace derive_probe
+
+template <typename T, typename = void>
+struct has_derived_formatter : std::false_type {};
+
+template <typename T>
+struct has_derived_formatter<
+    T, std::void_t<decltype(efmt_derive_format(
+           std::declval<const T &>(), std::declval<format_context &>(),
+           std::declval<const format_specs &>()))>> : std::true_type {};
+
+template <typename T>
+inline constexpr bool has_derived_formatter_v = has_derived_formatter<T>::value;
+
+// ============================================================================
 // 默认格式化器 - 必须在 has_formatter 之前定义
 // ============================================================================
-// 没有任何格式化器的类型：退化成"类型名 + 地址"，方便定位（不会静默输出空白）。
+// 优先用派生出来的格式化函数；没有再退化成"类型名 + 地址"方便定位（不静默输出空白）。
 template <typename T, typename = void>
 struct default_formatter {
   static void format(format_context &ctx, const format_specs &specs,
                      const T &value) {
-    ctx.write_str("obj@");
-    write_hex_address(ctx, specs, static_cast<const void *>(&value), "0x0");
+    if constexpr (has_derived_formatter_v<T>) {
+      efmt_derive_format(value, ctx, specs);  // ADL：找到用户侧展开的自由函数
+    } else {
+      ctx.write_str("obj@");
+      write_hex_address(ctx, specs, static_cast<const void *>(&value), "0x0");
+    }
   }
 };
 
@@ -136,11 +166,28 @@ inline constexpr bool has_formatter_v = has_formatter<T>::value;
 // ============================================================================
 template <typename T>
 struct formatter {
+  // 只有这个主模板带这个标记：用户可以据此（库内部据它判断）知道 formatter<T>
+  // 是否被特化过 —— 枚举的分发需要这个信息（见 formatter.hpp 的枚举入口）。
+  using e_fmt_primary_formatter = void;
+
   static void format(format_context &ctx, const format_specs &specs,
                      const T &value) {
     default_formatter<T>::format(ctx, specs, value);
   }
 };
+
+// formatter<T> 是否被特化过（含内置类型与用户特化）
+template <typename T, typename = void>
+struct has_formatter_specialization : std::true_type {};
+
+template <typename T>
+struct has_formatter_specialization<
+    T, std::void_t<typename formatter<T>::e_fmt_primary_formatter>>
+    : std::false_type {};
+
+template <typename T>
+inline constexpr bool has_formatter_specialization_v =
+    has_formatter_specialization<T>::value;
 
 // ============================================================================
 // 成员描述符
@@ -318,11 +365,14 @@ struct has_formatter_no_default<T, std::enable_if_t<is_builtin_type<std::decay_t
 template <typename T>
 inline constexpr bool has_formatter_no_default_v = has_formatter_no_default<T>::value;
 
-// 如果类型有 operator<< 且没有 formatter 特化，使用流式格式化器
+// 如果类型有 operator<< 且没有 formatter 特化，使用流式格式化器。
+// 注意排除"已经有派生格式化函数"的类型：无作用域枚举因为能隐式转成 int，会被
+// ostream 的 operator<<(int) 接住，从而抢走 E_FMT_FORMATTER_ENUM 的优先级。
 template <typename T>
 struct default_formatter<T, std::enable_if_t<
     has_stream_formatter_v<T> &&
-    !has_formatter_no_default_v<T>>> {
+    !has_formatter_no_default_v<T> &&
+    !has_derived_formatter_v<T>>> {
   static void format(format_context &ctx, const format_specs &specs,
                      const T &value) {
     stream_formatter<T>::format(ctx, specs, value);

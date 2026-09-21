@@ -43,6 +43,7 @@ efmt/core/            格式化库本体（头文件，13 个模块）
   format_traits.hpp   类型分派与扩展点
   formatter.hpp       内置类型格式化器
   format_float.hpp    自带浮点引擎（不依赖 libc printf）
+  format_derive.hpp   自定义类型自动派生（AUTO / FIELDS / ENUM）
   format_range.hpp    容器/tuple（宿主默认开，嵌入式默认关）
   format_output.hpp   输出处理器（UART/RTT/缓冲/丢弃）
   format.hpp          入口：format / format_to / formatted_size / print*
@@ -91,6 +92,27 @@ docs/                 使用手册
 
 ---
 
+## v1.5 自定义类型自动派生
+
+不用再抄"成员类型 + 成员名 + 显示字符串"三遍：
+
+```cpp
+struct point { int x, y; };
+E_FMT_FORMATTER_FIELDS(point, x, y);   // 输出 {x=10, y=20}；类型由 &point::x 推导，名字由 #x 生成
+
+struct reading { float temp; float hum; unsigned ts; };
+E_FMT_FORMATTER_AUTO(reading);         // 输出 reading(25.5, 60, 12345)，改结构体不用同步
+
+enum class color { red, green, blue };
+E_FMT_FORMATTER_ENUM(color, red, green, blue);   // 输出 red / green / blue
+```
+
+* 宏展开成自由函数（ADL 定制点），**不进 e_fmt 命名空间**：用户类型名与库内部同名符号
+  （`detail::color`/`detail::style` …）不再互相误伤
+* 枚举现在能真正走到格式化器：以前无作用域枚举会被 ostream 的 `operator<<(int)` 抢走
+* `AUTO` 只支持简单聚合体；含 C 型数组时用 `E_FMT_FORMATTER_AUTO_N(Type, 字段数)`
+* 老的 `E_FMT_FORMATTER_1/2/3` / `_FN` 照常可用
+
 ## 验证
 
 ```powershell
@@ -99,7 +121,8 @@ docs/                 使用手册
 .\tests\run_check.ps1 -Size     # 额外量 Cortex-M / ESP32 的 Flash 与 RAM
 ```
 
-当前基线：行为检查 143 项 × 2 个标准全通过、浮点对拍 24.6 万次 0 失败、两个编译期反例按预期失败。
+当前基线：行为检查 143 项 × 2 个标准全通过、自动派生 27 项（宿主 + 嵌入式）、
+浮点对拍 24.6 万次 0 失败、三个编译期反例按预期失败。
 
 ---
 
