@@ -204,6 +204,9 @@ inline format_args pack_format_args(Args &&...args) {
 // Almost every format() result fits in a small stack buffer, so the common case
 // is written once and copied into the string; only longer output re-runs into a
 // correctly sized string (the first pass already returned the exact length).
+// 只有 std::string 路径需要它，嵌入式（EFMT_ENABLE_DYNAMIC_STRING=0）整块裁掉，
+// 连带不再需要 <string> 的完整定义。
+#if EFMT_ENABLE_DYNAMIC_STRING
 template <typename Executor>
 std::string format_string(Executor &executor) {
   char local[EFMT_STRING_BUFFER_SIZE];
@@ -217,6 +220,7 @@ std::string format_string(Executor &executor) {
   executor.execute(out.data(), out.size());
   return out;
 }
+#endif  // EFMT_ENABLE_DYNAMIC_STRING
 
 // 样式输出与打印实现
 inline void apply_style_to_buffer(char *buffer, size_t &size,
@@ -227,26 +231,33 @@ inline void apply_style_to_buffer(char *buffer, size_t &size,
 template <typename... Args>
 void print_styled_impl_no_stream(const text_style &style, std::string_view fmt_str,
                                  Args &&...args) {
+  char format_buffer[EFMT_PRINT_BUFFER_SIZE];
+  const size_t needed = format_to(format_buffer, sizeof(format_buffer), fmt_str,
+                                  static_cast<Args &&>(args)...);
+
+#if !EFMT_ENABLE_ANSI_STYLES
+  (void)style;  // 关闭 ANSI 时样式参数不参与任何输出
+#else
+  // 关闭 ANSI 时整块样式缓冲都不存在（嵌入式少 64 B 栈）
   char style_buffer[64];
   size_t style_len = 0;
-
   if (!style.is_empty()) {
     apply_style_to_buffer(style_buffer, style_len, style);
     if (style_len > 0) {
       internal_write(style_buffer, style_len);
     }
   }
+#endif
 
-  char format_buffer[EFMT_PRINT_BUFFER_SIZE];
-  const size_t needed = format_to(format_buffer, sizeof(format_buffer), fmt_str,
-                                  static_cast<Args &&>(args)...);
   internal_write(format_buffer,
                  (needed < sizeof(format_buffer)) ? needed
                                                   : sizeof(format_buffer) - 1);
 
-  if (!style.is_empty()) {
+#if EFMT_ENABLE_ANSI_STYLES
+  if (style_len > 0) {
     internal_write(style_builder::reset(), style_builder::reset_length());
   }
+#endif
 }
 
 template <typename... Args>

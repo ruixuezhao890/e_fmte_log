@@ -12,11 +12,21 @@
 #define FORMATTER_HPP
 
 #include "format_traits.hpp"
-#include "format_range.hpp"
 
+#if EFMT_ENABLE_FLOAT && !EFMT_USE_LIBC_PRINTF
+#include "format_float.hpp"
+#endif
+
+#if EFMT_ENABLE_CONTAINER_FORMAT
+#include "format_range.hpp"
+#endif
+
+#include <cstring>
+
+#if EFMT_USE_LIBC_PRINTF
 #include <cmath>
 #include <cstdio>
-#include <cstring>
+#endif
 #include <middleware/efmt/core/format_args.hpp>
 #include <middleware/efmt/core/format_base.hpp>
 #include <middleware/efmt/core/format_context.hpp>
@@ -145,10 +155,24 @@ private:
 // ============================================================================
 // 浮点格式化
 // ============================================================================
+// EFMT_ENABLE_FLOAT=0 时整块不编译（连浮点通道的包装函数一起裁掉）
+#if EFMT_ENABLE_FLOAT
 class float_formatter {
 public:
   static void format(format_context &ctx, const format_specs &specs,
                      double value) {
+#if EFMT_USE_LIBC_PRINTF
+    format_via_libc(ctx, specs, value);
+#else
+    // 自带引擎：不依赖 libc 的浮点 printf，也不需要堆（见 format_float.hpp）
+    builtin_float_formatter::format(ctx, specs, value);
+#endif
+  }
+
+private:
+#if EFMT_USE_LIBC_PRINTF
+  static void format_via_libc(format_context &ctx, const format_specs &specs,
+                              double value) {
     // 使用更大的缓冲区来处理可能的符号前缀
     char buffer[128];
 
@@ -235,7 +259,9 @@ private:
       return "%.*g";
     }
   }
+#endif  // EFMT_USE_LIBC_PRINTF
 };
+#endif  // EFMT_ENABLE_FLOAT
 
 // ============================================================================
 // 字符串格式化
@@ -288,33 +314,8 @@ class pointer_formatter {
 public:
   static void format(format_context &ctx, const format_specs &specs,
                      const void *ptr) {
-    if (ptr == nullptr) {
-      ctx.write_aligned("(nil)", specs);
-      return;
-    }
-
-    char buffer[20];
-    buffer[0] = '0';
-    buffer[1] = 'x';
-
-    const char *hex_digits = "0123456789abcdef";
-    uintptr_t addr = reinterpret_cast<uintptr_t>(ptr);
-
-    int pos = 2;
-    bool leading = true;
-    for (int shift = (sizeof(uintptr_t) * 8) - 4; shift >= 0; shift -= 4) {
-      int digit = (addr >> shift) & 0xF;
-      if (digit != 0 || !leading) {
-        buffer[pos++] = hex_digits[digit];
-        leading = false;
-      }
-    }
-
-    if (pos == 2) {
-      buffer[pos++] = '0';
-    }
-
-    ctx.write_aligned(std::string_view(buffer, static_cast<size_t>(pos)), specs);
+    // 与 default_formatter 的兜底输出共用同一份十六进制实现
+    write_hex_address(ctx, specs, ptr, "(nil)");
   }
 };
 
@@ -333,10 +334,12 @@ inline void format_uint64_wrapper(format_context &ctx, const format_specs &specs
   integral_formatter::format_unsigned(ctx, specs, arg.value.unsigned_integral);
 }
 
+#if EFMT_ENABLE_FLOAT
 inline void format_float_wrapper(format_context &ctx, const format_specs &specs,
                                  const format_arg &arg) {
   float_formatter::format(ctx, specs, arg.value.floating);
 }
+#endif
 
 inline void format_bool_wrapper(format_context &ctx, const format_specs &specs,
                                 const format_arg &arg) {
@@ -403,6 +406,7 @@ inline format_arg make_format_arg(T value) {
   }
 }
 
+#if EFMT_ENABLE_FLOAT
 inline format_arg make_format_arg(double value) {
   return format_arg::make_floating(value, format_float_wrapper);
 }
@@ -410,6 +414,16 @@ inline format_arg make_format_arg(double value) {
 inline format_arg make_format_arg(float value) {
   return format_arg::make_floating(static_cast<double>(value), format_float_wrapper);
 }
+#else
+// EFMT_ENABLE_FLOAT=0：浮点参数被编译期拒绝（比运行期静默出错好）
+template <typename T = double>
+inline format_arg make_format_arg(double) {
+  static_assert(!std::is_same<T, T>::value,
+                "EFMT_ENABLE_FLOAT=0: 本配置不编译浮点格式化，"
+                "需要打印浮点时请去掉该宏或改为 1");
+  return format_arg{};
+}
+#endif
 
 inline format_arg make_format_arg(bool value) {
   return format_arg::make_boolean(value, format_bool_wrapper);
@@ -505,6 +519,7 @@ struct formatter<unsigned long long> {
   }
 };
 
+#if EFMT_ENABLE_FLOAT
 // 浮点类型
 template <>
 struct formatter<float> {
@@ -519,6 +534,7 @@ struct formatter<double> {
     float_formatter::format(ctx, specs, value);
   }
 };
+#endif
 
 // 字符串类型
 template <>

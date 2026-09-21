@@ -12,6 +12,12 @@
 #define FORMAT_RANGE_HPP
 
 #include <middleware/efmt/core/format_base.hpp>
+
+// 容器 / tuple / pair 的自动格式化。嵌入式默认关闭（EFMT_ENABLE_CONTAINER_FORMAT=0）：
+// 省 Flash，也不会把 <iterator>/<tuple> 拖进 MCU 工程；需要时用
+// -DEFMT_ENABLE_CONTAINER_FORMAT=1 打开。
+#if EFMT_ENABLE_CONTAINER_FORMAT
+
 #include <middleware/efmt/core/format_context.hpp>
 #include <middleware/efmt/core/format_specs.hpp>
 #include <middleware/efmt/core/formatter.hpp>
@@ -253,5 +259,7 @@ struct default_formatter<std::pair<T, U>> {
 };
 
 } // namespace e_fmt::detail
+
+#endif // EFMT_ENABLE_CONTAINER_FORMAT
 
 #endif // FORMAT_RANGE_HPP

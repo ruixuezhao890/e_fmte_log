@@ -15,9 +15,8 @@
 #include <middleware/efmt/core/format_context.hpp>
 #include <middleware/efmt/core/format_specs.hpp>
 #include <type_traits>
-#include <tuple>
-#include <cstdio>
 #include <cstring>
+#include <tuple>
 #include <string_view>
 
 #if EFMT_ENABLE_DYNAMIC_STRING
@@ -42,16 +41,49 @@ template <typename T>
 struct formatter;
 
 // ============================================================================
+// 十六进制地址输出
+// ============================================================================
+// 指针与"无格式化器类型"共用：自己按位生成十六进制，避免为了 %p 把 libc 的
+// printf 链进固件（newlib-nano 下那是一大块代码 + 一堆 locale 状态）。
+inline void write_hex_address(format_context &ctx, const format_specs &specs,
+                              const void *address, const char *null_text) {
+  if (address == nullptr) {
+    ctx.write_aligned(null_text, specs);
+    return;
+  }
+
+  const uintptr_t value = reinterpret_cast<uintptr_t>(address);
+  char buffer[2 + sizeof(uintptr_t) * 2];
+  buffer[0] = '0';
+  buffer[1] = 'x';
+
+  size_t len = 2;
+  bool leading = true;
+  for (int shift = static_cast<int>(sizeof(uintptr_t) * 8) - 4; shift >= 0;
+       shift -= 4) {
+    const unsigned digit =
+        static_cast<unsigned>((value >> shift) & static_cast<uintptr_t>(0xF));
+    if (digit != 0 || !leading) {
+      buffer[len++] = "0123456789abcdef"[digit];
+      leading = false;
+    }
+  }
+  if (leading) {
+    buffer[len++] = '0';
+  }
+  ctx.write_aligned(std::string_view(buffer, len), specs);
+}
+
+// ============================================================================
 // 默认格式化器 - 必须在 has_formatter 之前定义
 // ============================================================================
+// 没有任何格式化器的类型：退化成"类型名 + 地址"，方便定位（不会静默输出空白）。
 template <typename T, typename = void>
 struct default_formatter {
-  static void format(format_context &ctx, const format_specs &,
+  static void format(format_context &ctx, const format_specs &specs,
                      const T &value) {
-    char buffer[128];
-    int len = snprintf(buffer, sizeof(buffer), "obj@%p",
-                       static_cast<const void *>(&value));
-    ctx.write_chars(buffer, static_cast<size_t>(len));
+    ctx.write_str("obj@");
+    write_hex_address(ctx, specs, static_cast<const void *>(&value), "0x0");
   }
 };
 

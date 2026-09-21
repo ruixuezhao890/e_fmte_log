@@ -202,6 +202,14 @@ public:
   // sequence builder then needs no <cstdio>, which matters on embedded builds
   // with EFMT_ENABLE_STDIO=0.
   static size_t build(text_style ts, char* buffer, size_t buffer_size) {
+#if !EFMT_ENABLE_ANSI_STYLES
+    // 嵌入式/关闭 ANSI：样式接口保留，但一个字节都不产生（UART 里不会再出现
+    // ESC[34m 这种垃圾）。这就是 EFMT_ENABLE_ANSI_STYLES=0 的语义。
+    (void)ts;
+    (void)buffer;
+    (void)buffer_size;
+    return 0;
+#else
     if (ts.is_empty() || buffer_size < 4) {
       return 0;
     }
@@ -223,6 +231,7 @@ public:
     buffer[pos++] = 'm';
 
     return pos;
+#endif
   }
 
   // Reset sequence
@@ -231,7 +240,8 @@ public:
   }
 
   static constexpr size_t reset_length() {
-    return 4;  // strlen("\033[0m")
+    // 关闭 ANSI 时长度为 0：调用方照常"写 reset"，但实际不产生任何字节
+    return EFMT_ENABLE_ANSI_STYLES ? 4u : 0u;  // strlen("\033[0m")
   }
 
 private:

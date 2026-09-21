@@ -58,10 +58,17 @@ public:
   void write_str(std::string_view sv) { write_chars(sv.data(), sv.size()); }
 
   // 填充字符（用于对齐）
+  // 整段填充一次 memset 写完；缓冲区放不下时只写放得下的部分，位置照样累加
+  // （计数模式因此退化成一次加法，不会逐字符空转）。
   void write_fill(char fill, size_t count) {
-    for (size_t i = 0; i < count; ++i) {
-      write_char(fill);
+    if (count == 0) {
+      return;
     }
+    if (pos_ < size_) {
+      const size_t space = size_ - pos_;
+      std::memset(buffer_ + pos_, fill, (count <= space) ? count : space);
+    }
+    pos_ += count;
   }
 
   // 应用对齐

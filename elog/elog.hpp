@@ -97,12 +97,23 @@ inline const char *to_string(errc value) {
   }
 }
 
+// 可裁剪的容量上限（都能用 -D 覆盖）
+//   ELOG_MAX_LOGGERS：注册表里的 logger 槽位数，每个约占 64 B 静态 RAM
+//   ELOG_MAX_RECORD_SIZE：单条日志（时间戳/位置前缀 + 消息）的栈缓冲
+#ifndef ELOG_MAX_LOGGERS
+#define ELOG_MAX_LOGGERS 8
+#endif
+#ifndef ELOG_MAX_RECORD_SIZE
+#define ELOG_MAX_RECORD_SIZE 384
+#endif
+
 struct config {
-  static constexpr std::size_t max_loggers = 8;
+  static constexpr std::size_t max_loggers = ELOG_MAX_LOGGERS;
   static constexpr std::size_t max_logger_name = 31;
   static constexpr std::size_t max_sinks_per_logger = 4;
-  static constexpr std::size_t max_payload_size = 256;
-  static constexpr std::size_t max_record_size = 384;
+  // 消息不再单独占一块缓冲（见 logger::try_log_at），保留名字仅为兼容旧代码
+  static constexpr std::size_t max_payload_size = ELOG_MAX_RECORD_SIZE;
+  static constexpr std::size_t max_record_size = ELOG_MAX_RECORD_SIZE;
 };
 
 struct source_location {
@@ -211,14 +222,15 @@ public:
     return value >= level_ && level_ != level::off;
   }
 
+  // 参数一律按 const 引用转发：日志调用不该复制实参（字符串/自定义类型尤其明显）
   template <typename... Args>
-  void_result try_log(level value, const char *fmt, Args... args) const {
+  void_result try_log(level value, const char *fmt, const Args &...args) const {
     return try_log_at(value, source_location{}, fmt, args...);
   }
 
   template <typename... Args>
-  void_result try_log_at(level value, const source_location& location,
-                         const char *fmt, Args... args) const {
+  void_result try_log_at(level value, const source_location &location,
+                         const char *fmt, const Args &...args) const {
     if (!should_log(value)) {
       return {};
     }
@@ -227,29 +239,27 @@ public:
       return make_unexpected(errc::invalid_sink);
     }
 
+    // 单遍直写：前缀先写进记录缓冲，消息紧接着写在它后面。
+    // 旧实现先把消息格式化到 payload[257]，再格式化一遍整条记录（把 payload 当
+    // 参数再抄一次），每次日志要做两遍完整格式化、还多占 257 B 栈。
+    // 这里两块都不需要：record 只需要一块缓冲，两块字段顺序写入。
+    char record[config::max_record_size + 1U];
+
+    const std::size_t prefix_size = e_fmt::format_to(
+        record, sizeof(record), "[{}] [{}:{} {}] ", to_string(value),
+        basename(location.file), location.line, location.function);
+    if (prefix_size >= sizeof(record)) {
+      return make_unexpected(errc::message_too_long);
+    }
+
     // format_to 返回完整输出所需长度（snprintf 语义）：放不下就是消息太长
-    char payload[config::max_payload_size + 1U] = {};
-    const std::size_t payload_size =
-        e_fmt::format_to(payload, sizeof(payload), fmt, args...);
-    if (payload_size >= sizeof(payload)) {
+    const std::size_t body_size = e_fmt::format_to(
+        record + prefix_size, sizeof(record) - prefix_size, fmt, args...);
+    if (body_size >= sizeof(record) - prefix_size) {
       return make_unexpected(errc::message_too_long);
     }
 
-    char record[config::max_record_size + 1U] = {};
-    const std::size_t record_size = e_fmt::format_to(
-        record,
-        sizeof(record),
-        "[{}] [{}:{} {}] {}",
-        to_string(value),
-        basename(location.file),
-        location.line,
-        location.function,
-        payload);
-    if (record_size >= sizeof(record)) {
-      return make_unexpected(errc::message_too_long);
-    }
-
-    auto write_result = write_with_style(value, record, record_size);
+    auto write_result = write_with_style(value, record, prefix_size + body_size);
     if (!write_result.has_value()) {
       return write_result;
     }
