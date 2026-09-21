@@ -101,6 +101,26 @@ template <typename T>
 inline constexpr bool has_derived_formatter_v = has_derived_formatter<T>::value;
 
 // ============================================================================
+// 类型内一行写法（E_FMT_FIELDS）的探测
+// ============================================================================
+// E_FMT_FIELDS(x, y, z) 写在类型内部时会生成静态函数 efmt_field_names()。
+// 库直接读它：不需要 ADL、不需要特化，命名空间/限定名/遮蔽问题一概不存在，
+// 也能用在模板结构体里（这是 E_FMT_DERIVE 覆盖不到的边界）。
+template <typename T, typename = void>
+struct has_field_names : std::false_type {};
+
+template <typename T>
+struct has_field_names<T, std::void_t<decltype(T::efmt_field_names())>> : std::true_type {};
+
+template <typename T>
+inline constexpr bool has_field_names_v = has_field_names<T>::value;
+
+// 定义在 format_derive.hpp；这里只要声明（模板体在实例化时已经可见）
+template <typename T>
+void format_via_field_names(format_context &ctx, const format_specs &specs,
+                            const T &value);
+
+// ============================================================================
 // 默认格式化器 - 必须在 has_formatter 之前定义
 // ============================================================================
 // 优先用派生出来的格式化函数；没有再退化成"类型名 + 地址"方便定位（不静默输出空白）。
@@ -110,6 +130,8 @@ struct default_formatter {
                      const T &value) {
     if constexpr (has_derived_formatter_v<T>) {
       efmt_derive_format(value, ctx, specs);  // ADL：找到用户侧展开的自由函数
+    } else if constexpr (has_field_names_v<T>) {
+      format_via_field_names(ctx, specs, value);  // 类型内一行 E_FMT_FIELDS(...)
     } else {
       ctx.write_str("obj@");
       write_hex_address(ctx, specs, static_cast<const void *>(&value), "0x0");

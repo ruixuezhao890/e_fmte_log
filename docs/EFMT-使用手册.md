@@ -416,59 +416,102 @@ E_FMT_FORMATTER_FN(Packet, [](format_context& ctx, const format_specs&, const Pa
 });
 ```
 
-### 5.4 自动派生：不用再抄类型和名字（推荐）
+### 5.4 声明即推导：`E_FMT_DERIVE`（对标 Rust 的 `#[derive(Debug)]`）
 
-老写法的痛点是**同一个信息抄三遍**：成员类型、成员名、显示用的字符串。抄错类型是编译错误，
-抄错字符串就是输出错——而且没法检查：
-
-```cpp
-// 旧写法：三处信息，任何一处笔误都靠人眼发现
-E_FMT_FORMATTER_2(point, int, x, "x", int, y, "y");
-```
-
-EFmt 提供三个"派生"宏，把三处压成一处（对标 Rust 的 `#[derive(Debug)]`）：
-
-| 宏 | 你要写的 | 输出示例 | 适用 |
-|----|---------|---------|------|
-| `E_FMT_FORMATTER_FIELDS(Type, a, b, …)` | 只列字段名 | `{x=10, y=20}` | **首选**，最多 12 个字段 |
-| `E_FMT_FORMATTER_AUTO(Type)` | 什么都不写 | `point(10, 20)` | 简单聚合体，改结构体不用同步 |
-| `E_FMT_FORMATTER_AUTO_N(Type, N)` | 字段个数 | 同上 | 成员里有 C 型数组时 |
-| `E_FMT_FORMATTER_ENUM(Type, A, B, …)` | 枚举取值名 | `green` | `enum` / `enum class` |
+**结构体和枚举都只写声明** —— 字段名、取值名一个字都不用写：
 
 ```cpp
-struct point { int x, y; };
-E_FMT_FORMATTER_FIELDS(point, x, y);      // 类型由 &point::x 推导，显示名由 #x 生成
-println_info("{}", point{10, 20});        // {x=10, y=20}
+E_FMT_DERIVE(struct imu {
+  float ax, ay, az;
+});
 
-struct reading { float temp; float hum; unsigned ts; };
-E_FMT_FORMATTER_AUTO(reading);            // 连字段都不用列
-println_info("{}", reading{25.5f, 60.0f, 12345u});   // reading(25.5, 60, 12345)
+E_FMT_DERIVE(enum class state {
+  idle,
+  busy = 5,
+  fault
+});
 
-enum class color { red, green, blue };
-E_FMT_FORMATTER_ENUM(color, red, green, blue);
-println_info("{}", color::green);          // green
-println_info("{:>8}", color::green);       // 支持宽度/对齐 -> "   green"
-println_info("{}", static_cast<color>(9)); // 没列出的取值 -> 底层整数 9
+println_info("{}", imu{1.5f, 2.5f, 3.5f});   // { ax = 1.5, ay = 2.5, az = 3.5 }
+println_info("{}", state::busy);             // busy
 ```
 
-**要点与边界**
+嵌套、数组、位域、默认值、静态成员、成员函数、函数指针、命名空间，全都只用写声明：
 
-* 宏请写在**类型所在的命名空间里**（类型在全局就写在全局）：库通过 ADL 找它。
-* 因此**类型名不会和库内部符号冲突** —— 旧宏展开时会进 `e_fmt::detail` 命名空间，
-  一个叫 `color`/`style` 的用户类型会被解析成库自己的同名类型（静默格式化错对象）。
-* `FIELDS` / `AUTO` **忽略外层格式规范**（和旧宏一致）；`ENUM` 尊重宽度/对齐。
-* `AUTO` 只支持简单聚合体：公开成员、无基类、无自定义构造函数。
-  成员里有 **C 型数组**（`char name[8]`）时字段数推导会偏大（花括号省略），
-  这时用 `E_FMT_FORMATTER_AUTO_N(Type, 字段个数)` 显式给出个数：
+```cpp
+E_FMT_DERIVE(struct frame {
+  unsigned seq;
+  imu sample;                // 内层也推导了 → 递归带名字
+  raw_pair pair;             // 内层没推导 → 位置式 (4, 5)，不用你操心
+  float cal[3];              // 数组 → [1.5, 2.5, 3.5]
+  char tag[8];               // char 数组 → 字符串 imu0
+  unsigned flags : 3;        // 位域 ✓（GCC 下 std::tie 绑位域会打 0，这里是直接传引用，正确）
+  int gain = 2;              // 默认成员初始化 ✓
+  void (*callback)(int);     // 函数指针 → 十六进制地址 / (nil)
+  static const int kMax = 8; // 静态成员：自动跳过
+  int getSeq() const;        // 成员函数：自动跳过
+});
+```
 
-  ```cpp
-  struct frame { unsigned len; char payload[16]; };
-  E_FMT_FORMATTER_AUTO_N(frame, 2);
-  ```
+**它是怎么做到的**（全在编译期，运行时零开销）：
 
-* 枚举没列出的取值按**底层类型**打印（`unsigned char` 的枚举打印 255 而不是 -1）。
-* 老的 `E_FMT_FORMATTER_1/2/3` / `E_FMT_FORMATTER_FN` 照常可用，不需要改动既有代码。
+1. 宏在声明后面追加一个 `extern` 声明，用 `decltype` 抓住刚声明的类型（不占存储、类型名不用重复）；
+2. 用 `#__VA_ARGS__` 把声明文本在**编译期解析**出字段名/枚举名；
+3. 在同一作用域生成一个 ADL 自由函数，把名字表挂到类型上（宏声明了类型 ⇒ ADL 必然找得到，命名空间里的类型也不会出错）；
+4. 取值用结构化绑定后**直接**交给格式化器；
+5. 解析出的字段数就是结构化绑定的数量 —— **对不上就编译报错**，绝不静默输出错名字。
 
+**边界（超出这些写法会明确报错，并提示改用下面的兜底写法）**
+
+| 写法 | 支持 | 说明 |
+|------|------|------|
+| 结构体 / 枚举 / 嵌套 / 数组 / 位域 / 默认值 / 静态成员 / 成员函数 / 函数指针 / 命名空间 | ✓ | 见上面的例子 |
+| 枚举取值：自增、`= 5`、`= 0x10`、负数 | ✓ | 未列出的取值打印底层整数 |
+| 枚举取值是**非字面量**（`A = 1 << 3`、`B = A + 1`） | ✗ | 报错 → 用 `E_FMT_FIELDS(取值名, ...)` 显式列出，或手写 formatter |
+| 声明里出现 `#if` / `#include` / 宏调用 | ✗ | 整个声明是宏的参数 → 用 `E_FMT_FIELDS(字段, ...)` 写在类型内部 |
+| 模板结构体 | ✗ | 同上 |
+| 基类 / 私有成员 | ✗ | 结构化绑定本身就不支持 |
+| 超过 `EFMT_DERIVE_MAX_FIELDS`（默认 16） | ✗ | 调大宏或改用其它写法 |
+
+**兜底写法一：类型里写一行 `E_FMT_FIELDS`**（已有类型、需要 `#if`、模板结构体、超过上限时用它）
+
+```cpp
+struct cfg {
+  int retry;
+  bool verbose;
+  E_FMT_FIELDS(retry, verbose);      // 只列名字；类型/字符串/成员指针全自动
+};
+
+struct with_platform_field {
+  int base;
+#ifdef STM32
+  int extra;
+  E_FMT_FIELDS(base, extra);         // 声明里有 #if，E_FMT_DERIVE 做不到，这里可以
+#else
+  E_FMT_FIELDS(base);
+#endif
+};
+
+template <typename T>                 // 模板结构体也可以（E_FMT_DERIVE 做不到）
+struct box {
+  T value;
+  int tag;
+  E_FMT_FIELDS(value, tag);
+};
+```
+
+两种写法可以互相嵌套（`E_FMT_FIELDS` 的类型作为 `E_FMT_DERIVE` 类型的成员，反之亦然），
+输出风格一致。
+
+**兜底写法二：老的结构化宏**（`E_FMT_FORMATTER_1/2/3`、`E_FMT_FORMATTER_FN`、`E_FMT_FORMATTER_AUTO` 等）继续可用，不需要改既有代码。
+
+**输出与体积开关**
+
+| 宏 | 默认 | 作用 |
+|----|------|------|
+| `EFMT_DERIVE_SHOW_TYPE` | 0 | 输出带不带类型名：`{ ax = 1.5 }`（默认，省 Flash）vs `imu { ax = 1.5 }`（开它 **+1.35 KB Flash**，Cortex-M4 实测） |
+| `EFMT_DERIVE_MAX_FIELDS` | 16 | 单类型字段/取值上限 |
+| `EFMT_DERIVE_MAX_ARRAY_ITEMS` | 8 | 数组成员最多打几个元素，超出 `...` |
+| `EFMT_DERIVE_STRICT` | 1 | 成员没有格式化器 → 编译报错（Rust 行为）；设 0 退回 `obj@地址` |
 ### 5.5 容器与 tuple（默认只在宿主可用）
 
 ```cpp
@@ -697,6 +740,22 @@ static_assert(!EFMT_ENABLE_ANSI_STYLES, "嵌入式不要往串口发转义序列
   `_malloc_r / _free_r / _sbrk` 拉进固件（newlib 的 dtoa 会动态分配），现在这条链没有了。
 * 完全关掉浮点（`-DEFMT_ENABLE_FLOAT=0`）时最小裁剪配置在 Cortex-M4 上是 **3888 B**
   （另一份更小的测试程序，见 `-Size` 输出）。
+
+### 8.2b 自定义类型推导的代价（`E_FMT_DERIVE` vs 手写宏）
+
+同一份输出任务、Cortex-M4 `-Os`：
+
+| 版本 | .text | 对比 |
+|------|-------|------|
+| 完全不格式化（基线） | 452 B | — |
+| 老的结构化宏 `E_FMT_FORMATTER_3(imu, float, ax, "ax", …)` | 6548 B | 基准 |
+| **`E_FMT_DERIVE(struct imu { … });`（默认）** | **6692 B** | **+144 B** |
+| `E_FMT_DERIVE` + `EFMT_DERIVE_SHOW_TYPE=1`（带类型名） | 8044 B | +1496 B |
+| 嵌套两个类型：老宏 7728 B / `E_FMT_DERIVE` 8080 B | | +352 B |
+
+结论：**推导的代价是每个类型约 150~350 B**（换来字段名与类型名零手写、漏字段编译报错），
+而"输出带类型名"这一项单独就要 1.35 KB —— 所以默认关（`EFMT_DERIVE_SHOW_TYPE=0`）。
+解析本身是**编译期**的，运行时零开销，也不占 RAM。
 
 ### 8.3 栈占用实测（`-fstack-usage`，GCC x64 宿主口径，比值可参考）
 
@@ -928,6 +987,31 @@ E_FMT_FORMATTER_FN(Rgb, [](format_context& ctx, const format_specs&, const Rgb& 
 `E_FMT_FORMATTER_AUTO_N(Type, M)`（M 用报错里给出的那个数字），或改用
 `E_FMT_FORMATTER_FIELDS(Type, 字段…)`。
 
+**Q25：`E_FMT_DERIVE` 报"解析不出这段声明里的字段/取值"？**
+说明声明里有解析器认不出的形态。常见两种：
+① 枚举取值是非字面量（`A = 1 << 3`、`B = A + 1`）→ 改用 `E_FMT_FIELDS(取值名, ...)`；
+② 声明里出现了 `#if`/`#include`/宏调用，或字段数超过 `EFMT_DERIVE_MAX_FIELDS`（默认 16）→
+改用类型内一行 `E_FMT_FIELDS(字段, ...)`。错误信息里会给出这两条出路。
+
+**Q26：`E_FMT_DERIVE` 打出来没有类型名？**
+默认关（`EFMT_DERIVE_SHOW_TYPE=0`），输出 `{ ax = 1.5 }`，比带类型名省 **1.35 KB Flash**
+（Cortex-M4 实测）。想要 Rust 那种 `imu { ax = 1.5 }` 就设 `EFMT_DERIVE_SHOW_TYPE=1`。
+
+**Q27：为什么位域也能打对？`std::tie` 不是有坑吗？**
+有坑：GCC 下 `std::tie` 绑位域会拿到**未初始化的临时量**（实测打印 0）。EFmt 的推导路径
+**不经过 `std::tie`**，而是把结构化绑定的变量直接按引用交给格式化器 —— 实测 `-O0/-O2` 都正确。
+
+**Q28：成员类型没有格式化器时？**
+编译报错并点名那个类型（Rust 里相当于"这个类型没实现 Debug"）：
+
+```
+error: static assertion failed: 成员类型没有格式化器：给它加 E_FMT_DERIVE(...)，
+       或写一个 formatter<>（Rust 里相当于这个类型没实现 Debug）
+```
+
+给它加 `E_FMT_DERIVE`，或写 `E_FMT_FORMATTER_FN`；实在想退回旧的"打印地址"行为就设
+`EFMT_DERIVE_STRICT=0`。
+
 **Q24：自动派生的宏为什么不能写在别的命名空间里？**
 库靠 ADL（实参相关查找）找 `efmt_derive_format`，而 ADL 只搜索"实参类型所属的命名空间"。
 把宏写在类型所在的命名空间（类型在全局就写在全局）即可。
@@ -1091,6 +1175,10 @@ E_FMT_FORMATTER_2(Type, T1, m1, "n1", T2, m2, "n2")
 E_FMT_FORMATTER_3(Type, T1, m1, "n1", T2, m2, "n2", T3, m3, "n3")
 E_FMT_FORMATTER_FN(Type, lambda)
 
+E_FMT_DERIVE(struct imu { float ax, ay, az; });   // 声明即推导（推荐）
+E_FMT_DERIVE(enum class state { idle, busy = 5, fault });
+
+E_FMT_FIELDS(m1, m2, ...)                   // 类型内一行：只列名字（#if/模板/超上限时用）
 E_FMT_FORMATTER_FIELDS(Type, m1, m2, ...)   // 只列字段名（≤12），名字自动转字符串
 E_FMT_FORMATTER_AUTO(Type)                  // 简单聚合体：字段全自动
 E_FMT_FORMATTER_AUTO_N(Type, count)         // 有 C 型数组成员时显式给字段个数
@@ -1175,6 +1263,10 @@ g++ -std=c++17 -O2 -Itests/include -DEFMT_USE_LIBC_PRINTF=0 -DEFMT_FLOAT_CHECK_I
 | 宏 | 默认（宿主 / 嵌入式） | 影响 | 典型用法 |
 |----|---------------------|------|---------|
 | `EFMT_ENABLE_HOSTED` | 自动 | 总开关 | `-DEFMT_ENABLE_HOSTED=0` 强制嵌入式 |
+| `EFMT_DERIVE_SHOW_TYPE` | 0 | 推导输出是否带类型名 | 开它 +1.35 KB Flash（Cortex-M4） |
+| `EFMT_DERIVE_MAX_FIELDS` | 16 | 单类型字段/取值上限 | 更大结构体时调大 |
+| `EFMT_DERIVE_MAX_ARRAY_ITEMS` | 8 | 数组成员最多打几个 | 缓冲区想全打就调大 |
+| `EFMT_DERIVE_STRICT` | 1 | 成员缺格式化器即编译错误 | 设 0 退回 `obj@地址` |
 | `EFMT_MAX_FORMAT_ARGS` | 16 / 8 | 每次调用栈 = 24 B × N | `=4` 省 96 B 栈 |
 | `EFMT_PRINT_BUFFER_SIZE` | 256 / 256 | `print/println` 单行上限 | `=128` 省 128 B 栈 |
 | `EFMT_STRING_BUFFER_SIZE` | 256 | `format()` 是否需要二次分配 | 宿主调优 |
@@ -1218,6 +1310,25 @@ g++ -std=c++17 -O2 -Itests/include -DEFMT_USE_LIBC_PRINTF=0 -DEFMT_FLOAT_CHECK_I
 
 ---
 
+- **v1.6** `E_FMT_DERIVE`：声明即推导（真正的 Rust `#[derive(Debug)]` 体验）
+  - **一个宏管结构体和枚举**，字段名/取值名一个字都不用写：
+    `E_FMT_DERIVE(struct imu { float ax, ay, az; });` → `{ ax = 1.5, ay = 2.5, az = 3.5 }`、
+    `E_FMT_DERIVE(enum class state { idle, busy = 5 });` → `busy`
+  - 机制全部纯 C++17：`extern` + `decltype` 抓类型、`#__VA_ARGS__` 编译期解析声明文本、
+    同作用域 ADL 自由函数挂名字、结构化绑定取值 —— **无脚本、无第三方库、无编译器扩展**
+    （宿主 GCC 15.1 / arm-none-eabi 10.3 / xtensa 三条工具链实测通过）
+  - 取值路径**不经过 `std::tie`**：GCC 下 tie 绑位域会拿到未初始化临时量（实测打印 0），
+    改为直接传引用后位域正确且无拷贝；这也把推导开销从 +1360 B 压到 **+144 B**（Cortex-M4 -Os，
+    对比老的结构化宏；嵌套两类型 +352 B）
+  - 解析出的字段数 == 结构化绑定数量：对不上、成员缺格式化器、枚举非字面量初始值
+    → 一律**编译报错**并给出可操作的出路，绝不静默输出错名字
+  - 开关：`EFMT_DERIVE_SHOW_TYPE`（默认 0，省 Flash）、`EFMT_DERIVE_MAX_FIELDS`（16）、
+    `EFMT_DERIVE_MAX_ARRAY_ITEMS`（8）、`EFMT_DERIVE_STRICT`（1）
+  - 兜底：**类型内一行** `E_FMT_FIELDS(retry, verbose)`（不需要 ADL/特化，因此命名空间、
+    限定名、遮蔽问题一概不存在），支持 **`#if` 平台分支字段** 与 **模板结构体**，
+    可与 `E_FMT_DERIVE` 互相嵌套
+  - 测试：`tests/efmt_derive_auto_check.cpp`（27 项 × 宿主/嵌入式）、
+    `tests/efmt_compile_fail_derive.cpp`（成员缺格式化器必须编译失败）
 - **v1.5** 自定义类型自动派生（对标 Rust 的 `#[derive(Debug)]`）
   - 新增 `format_derive.hpp`：`E_FMT_FORMATTER_FIELDS`（只列字段名，类型与显示名自动）、
     `E_FMT_FORMATTER_AUTO` / `_AUTO_N`（纯聚合体零声明，输出 `Type(a, b, c)`）、

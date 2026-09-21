@@ -43,7 +43,7 @@ efmt/core/            格式化库本体（头文件，13 个模块）
   format_traits.hpp   类型分派与扩展点
   formatter.hpp       内置类型格式化器
   format_float.hpp    自带浮点引擎（不依赖 libc printf）
-  format_derive.hpp   自定义类型自动派生（AUTO / FIELDS / ENUM）
+  format_derive.hpp   自定义类型推导（E_FMT_DERIVE / FIELDS / AUTO / ENUM）
   format_range.hpp    容器/tuple（宿主默认开，嵌入式默认关）
   format_output.hpp   输出处理器（UART/RTT/缓冲/丢弃）
   format.hpp          入口：format / format_to / formatted_size / print*
@@ -92,6 +92,34 @@ docs/                 使用手册
 
 ---
 
+## v1.6 声明即推导：`E_FMT_DERIVE`（对标 Rust `#[derive(Debug)]`）
+
+**结构体和枚举都只写声明**，字段名/取值名一个字都不用写：
+
+```cpp
+E_FMT_DERIVE(struct imu {
+  float ax, ay, az;
+});
+println_info("{}", imu{1.5f, 2.5f, 3.5f});      // { ax = 1.5, ay = 2.5, az = 3.5 }
+
+E_FMT_DERIVE(enum class state {
+  idle,
+  busy = 5,
+});
+println_info("{}", state::busy);                 // busy
+```
+
+* 机制全部**纯 C++17**：`extern` + `decltype` 抓类型、`#__VA_ARGS__` 编译期解析声明文本、
+  同作用域 ADL 自由函数挂名字、结构化绑定取值。**无脚本、无第三方库、无编译器扩展**
+  （宿主 GCC / arm-none-eabi / xtensa 三条工具链实测通过）
+* 嵌套自动递归、数组打 `[a, b, c]`（char 数组仍当字符串）、位域正确（绕开 GCC 下
+  `std::tie` 绑位域会打印 0 的坑）、默认值 / 静态成员 / 成员函数 / 函数指针都处理
+* **出错一律编译报错**：解析不出、字段数对不上、成员缺格式化器 —— 不静默输出错名字
+* 代价：每个类型约 **+150~350 B Flash**（Cortex-M4 `-Os` 实测，对比老的结构化宏）；
+  带类型名输出要多 1.35 KB，所以默认关（`EFMT_DERIVE_SHOW_TYPE=1` 可开）
+* 边界（声明里有 `#if`、模板结构体、枚举非字面量初始值、>16 字段）→ 用类型内一行
+  `E_FMT_FIELDS(字段, ...)` 兜底；老写法全部继续可用
+
 ## v1.5 自定义类型自动派生
 
 不用再抄"成员类型 + 成员名 + 显示字符串"三遍：
@@ -121,8 +149,8 @@ E_FMT_FORMATTER_ENUM(color, red, green, blue);   // 输出 red / green / blue
 .\tests\run_check.ps1 -Size     # 额外量 Cortex-M / ESP32 的 Flash 与 RAM
 ```
 
-当前基线：行为检查 143 项 × 2 个标准全通过、自动派生 27 项（宿主 + 嵌入式）、
-浮点对拍 24.6 万次 0 失败、三个编译期反例按预期失败。
+当前基线：行为检查 143 项 × 2 个标准、`E_FMT_DERIVE` 22 项 × 2 配置、派生宏 27 项
+（宿主 + 嵌入式）、浮点对拍 24.6 万次 0 失败、四个编译期反例按预期失败 —— 全部通过。
 
 ---
 

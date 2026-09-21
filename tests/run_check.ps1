@@ -105,6 +105,21 @@ if (Invoke-EfmtBuild 'minimal configuration (no float, 4 args)' $tinyArgs) {
     Invoke-EfmtRun 'minimal configuration' $tiny
 }
 
+# 声明即推导（E_FMT_DERIVE，对标 Rust #[derive(Debug)]）
+$deriveAutoExe = Join-Path $out 'efmt_derive_auto_check.exe'
+$deriveAutoArgs = @('-std=c++17') + $baseArgs +
+    @((Join-Path $PSScriptRoot 'efmt_derive_auto_check.cpp'), '-o', $deriveAutoExe)
+if (Invoke-EfmtBuild 'E_FMT_DERIVE (declaration derives itself)' $deriveAutoArgs) {
+    Invoke-EfmtRun 'E_FMT_DERIVE' $deriveAutoExe
+}
+
+$deriveAutoEmbExe = Join-Path $out 'efmt_derive_auto_check_embedded.exe'
+$deriveAutoEmbArgs = @('-std=c++17') + $baseArgs + @('-DEFMT_ENABLE_HOSTED=0',
+    (Join-Path $PSScriptRoot 'efmt_derive_auto_check.cpp'), '-o', $deriveAutoEmbExe)
+if (Invoke-EfmtBuild 'E_FMT_DERIVE (embedded configuration)' $deriveAutoEmbArgs) {
+    Invoke-EfmtRun 'E_FMT_DERIVE (embedded)' $deriveAutoEmbExe
+}
+
 # 自定义类型自动派生（AUTO / FIELDS / ENUM）
 $deriveExe = Join-Path $out 'efmt_derive_check.exe'
 $deriveArgs = @('-std=c++17') + $baseArgs +
@@ -132,6 +147,8 @@ Invoke-EfmtCompileFail -Name 'mismatched argument count' -ExpectedPattern 'Numbe
 Invoke-EfmtCompileFail -Name 'float argument with EFMT_ENABLE_FLOAT=0' -ExpectedPattern 'EFMT_ENABLE_FLOAT=0' -Arguments @('-std=c++17', '-O2', "-I$include", '-DEFMT_ENABLE_HOSTED=0', '-DEFMT_ENABLE_FLOAT=0', (Join-Path $PSScriptRoot 'efmt_compile_fail_float.cpp'), '-o', (Join-Path $out 'compile_fail_float.exe'))
 
 Invoke-EfmtCompileFail -Name 'AUTO on a non-aggregate type' -ExpectedPattern 'E_FMT_FORMATTER_AUTO 只能用于聚合体' -Arguments @('-std=c++17', '-O2', "-I$include", (Join-Path $PSScriptRoot 'efmt_compile_fail_auto.cpp'), '-o', (Join-Path $out 'compile_fail_auto.exe'))
+
+Invoke-EfmtCompileFail -Name 'E_FMT_DERIVE with an unformattable member' -ExpectedPattern '成员类型没有格式化器' -Arguments @('-std=c++17', '-O2', "-I$include", (Join-Path $PSScriptRoot 'efmt_compile_fail_derive.cpp'), '-o', (Join-Path $out 'compile_fail_derive.exe'))
 
 $elog = Join-Path $root 'elog\elog.hpp'
 if ((Test-Path $elog) -and $hasEtl) {
