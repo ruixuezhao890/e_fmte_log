@@ -1082,27 +1082,12 @@ private:
 //   5) 解析出的字段数 == 结构化绑定数量：对不上就编译报错，绝不静默输出错名字
 
 // ---------------------------------------------------------------------------
-// 开关
+// 开关统一在 format_base.hpp：
+//   EFMT_DERIVE_SHOW_TYPE（默认 0）/ EFMT_DERIVE_MAX_FIELDS（16）/
+//   EFMT_DERIVE_MAX_ARRAY_ITEMS（8）/ EFMT_DERIVE_STRICT（1）
 // ---------------------------------------------------------------------------
-// 输出里是否带类型名：{ ax = 1.5 }（默认）还是 imu { ax = 1.5 }
-// 默认关：省 Flash —— 类型名要靠编译器签名宏解析，会多一份字符串与解析代码
-#ifndef EFMT_DERIVE_SHOW_TYPE
-#define EFMT_DERIVE_SHOW_TYPE 0
-#endif
-
-// 单类型最多支持多少字段/枚举取值：与上面的 EFMT_DERIVE_MAX_FIELDS 是同一个宏
 static_assert(EFMT_DERIVE_MAX_FIELDS >= 1 && EFMT_DERIVE_MAX_FIELDS <= 32,
               "EFMT_DERIVE_MAX_FIELDS 必须在 1..32 之间");
-
-// 数组成员最多打印几个元素，超出用 ... 省略
-#ifndef EFMT_DERIVE_MAX_ARRAY_ITEMS
-#define EFMT_DERIVE_MAX_ARRAY_ITEMS 8
-#endif
-
-// 严格模式：成员没有格式化器时直接编译报错（Rust 行为）；设为 0 退回旧的 obj@地址 行为
-#ifndef EFMT_DERIVE_STRICT
-#define EFMT_DERIVE_STRICT 1
-#endif
 
 // ---------------------------------------------------------------------------
 // 解析结果

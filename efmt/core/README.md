@@ -92,6 +92,22 @@ docs/                 使用手册
 
 ---
 
+## v1.7 修掉"宏写错作用域静默失效"
+
+`E_FMT_FORMATTER_FIELDS` / `_ENUM` / `_AUTO` / `_AUTO_N` 靠在**类型所在命名空间**里发 ADL 函数生效。
+写在全局（例如 `E_FMT_FORMATTER_FIELDS(app::cfg, retry)`）以前会**静默**退化成 `obj@地址`，
+现在由库侧编译期拦住（`EFMT_DERIVE_STRICT`，默认 1，定义成 0 可关）：
+
+```
+error: static assertion failed: 这个类型有字段但找不到格式化器。…请把宏写在【类型所在的命名空间】里；
+推荐改用 E_FMT_DERIVE(...) 或类型内一行 E_FMT_FIELDS(字段, ...)。确实想打印地址就定义 EFMT_DERIVE_STRICT=0。
+```
+
+`E_FMT_DERIVE(...)` 和类型内 `E_FMT_FIELDS(...)` 不走 ADL，没有作用域要求，照旧随便写。
+反例测试：`tests/efmt_compile_fail_derive_scope.cpp`。
+
+---
+
 ## v1.6 声明即推导：`E_FMT_DERIVE`（对标 Rust `#[derive(Debug)]`）
 
 **结构体和枚举都只写声明**，字段名/取值名一个字都不用写：

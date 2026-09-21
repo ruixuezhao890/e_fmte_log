@@ -120,6 +120,11 @@ template <typename T>
 void format_via_field_names(format_context &ctx, const format_specs &specs,
                             const T &value);
 
+// 同样定义在 format_derive.hpp：自动推导出的字段数（0 表示推不出来）。
+// 注意这里是两条模板参数：定义处 N 有默认值 1，声明处不能重复给默认值。
+template <typename T, std::size_t N>
+constexpr std::size_t aggregate_field_count();
+
 // ============================================================================
 // 默认格式化器 - 必须在 has_formatter 之前定义
 // ============================================================================
@@ -133,6 +138,15 @@ struct default_formatter {
     } else if constexpr (has_field_names_v<T>) {
       format_via_field_names(ctx, specs, value);  // 类型内一行 E_FMT_FIELDS(...)
     } else {
+#if EFMT_DERIVE_STRICT
+      // 有字段、却找不到任何格式化器的聚合体：几乎总是"宏写错了作用域"或"忘了注册"。
+      // 旧行为会静默打成 obj@地址，这里改成编译期报错。
+      static_assert(!(std::is_aggregate<T>::value && aggregate_field_count<T, 1>() > 0),
+                    "这个类型有字段但找不到格式化器。若你用过 E_FMT_FORMATTER_FIELDS / "
+                    "E_FMT_FORMATTER_ENUM / E_FMT_FORMATTER_AUTO，请把宏写在【类型所在的"
+                    "命名空间】里；推荐改用 E_FMT_DERIVE(...) 或类型内一行 "
+                    "E_FMT_FIELDS(字段, ...)。确实想打印地址就定义 EFMT_DERIVE_STRICT=0。");
+#endif
       ctx.write_str("obj@");
       write_hex_address(ctx, specs, static_cast<const void *>(&value), "0x0");
     }

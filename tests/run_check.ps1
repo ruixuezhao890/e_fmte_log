@@ -150,6 +150,8 @@ Invoke-EfmtCompileFail -Name 'AUTO on a non-aggregate type' -ExpectedPattern 'E_
 
 Invoke-EfmtCompileFail -Name 'E_FMT_DERIVE with an unformattable member' -ExpectedPattern '成员类型没有格式化器' -Arguments @('-std=c++17', '-O2', "-I$include", (Join-Path $PSScriptRoot 'efmt_compile_fail_derive.cpp'), '-o', (Join-Path $out 'compile_fail_derive.exe'))
 
+Invoke-EfmtCompileFail -Name 'derive macro outside the type namespace' -ExpectedPattern '请把宏写在' -Arguments @('-std=c++17', '-O2', "-I$include", (Join-Path $PSScriptRoot 'efmt_compile_fail_derive_scope.cpp'), '-o', (Join-Path $out 'compile_fail_scope.exe'))
+
 $elog = Join-Path $root 'elog\elog.hpp'
 if ((Test-Path $elog) -and $hasEtl) {
     $elogExe = Join-Path $out 'elog_integration.exe'

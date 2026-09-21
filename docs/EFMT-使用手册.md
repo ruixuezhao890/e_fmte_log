@@ -1012,6 +1012,30 @@ error: static assertion failed: 成员类型没有格式化器：给它加 E_FMT
 给它加 `E_FMT_DERIVE`，或写 `E_FMT_FORMATTER_FN`；实在想退回旧的"打印地址"行为就设
 `EFMT_DERIVE_STRICT=0`。
 
+**Q29：老宏 `E_FMT_FORMATTER_FIELDS` 写错了作用域会怎样？**
+**编译报错**（v1.7 起），错误信息直接告诉你怎么改：
+
+```
+error: static assertion failed: 这个类型有字段但找不到格式化器。若你用过
+E_FMT_FORMATTER_FIELDS / E_FMT_FORMATTER_ENUM / E_FMT_FORMATTER_AUTO，
+请把宏写在【类型所在的命名空间】里；推荐改用 E_FMT_DERIVE(...) 或类型内一行
+E_FMT_FIELDS(字段, ...)。确实想打印地址就定义 EFMT_DERIVE_STRICT=0。
+```
+
+早期版本在同样的情况下会**静默**退化成 `obj@地址`（这次已修）。正确/错误写法对照：
+
+```cpp
+namespace app {
+struct cfg { int retry; bool verbose; };
+E_FMT_FORMATTER_FIELDS(cfg, retry, verbose);      // ✓ 宏在类型所在命名空间里
+}  // namespace app
+
+E_FMT_FORMATTER_FIELDS(app::cfg, retry, verbose); // ✗ 宏在全局 → 编译报错
+```
+
+想要"写在哪里都行"，用推荐写法：`E_FMT_DERIVE(struct cfg {...})` 或类型内一行
+`E_FMT_FIELDS(retry, verbose)`（这两种不依赖 ADL，没有作用域要求）。
+
 **Q24：自动派生的宏为什么不能写在别的命名空间里？**
 库靠 ADL（实参相关查找）找 `efmt_derive_format`，而 ADL 只搜索"实参类型所属的命名空间"。
 把宏写在类型所在的命名空间（类型在全局就写在全局）即可。
@@ -1310,6 +1334,13 @@ g++ -std=c++17 -O2 -Itests/include -DEFMT_USE_LIBC_PRINTF=0 -DEFMT_FLOAT_CHECK_I
 
 ---
 
+- **v1.7** 修掉"宏写错作用域静默失效"
+  - 老宏（`E_FMT_FORMATTER_FIELDS` / `_ENUM` / `_AUTO` / `_AUTO_N`）写在类型命名空间
+    之外时，v1.5 会**静默**退化成 `obj@地址`
+  - 现在由库侧在编译期拦住：有字段却找不到格式化器的聚合体 → `static_assert` 并给出
+    两条出路（挪到类型所在命名空间 / 改用 `E_FMT_DERIVE(...)` 或 `E_FMT_FIELDS(...)`）；
+    想保留旧的地址输出就定义 `EFMT_DERIVE_STRICT=0`
+  - 新增反例测试 `tests/efmt_compile_fail_derive_scope.cpp`
 - **v1.6** `E_FMT_DERIVE`：声明即推导（真正的 Rust `#[derive(Debug)]` 体验）
   - **一个宏管结构体和枚举**，字段名/取值名一个字都不用写：
     `E_FMT_DERIVE(struct imu { float ax, ay, az; });` → `{ ax = 1.5, ay = 2.5, az = 3.5 }`、

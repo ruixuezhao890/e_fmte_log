@@ -129,6 +129,32 @@ namespace e_fmt {
 #define EFMT_ENABLE_CONTAINER_FORMAT EFMT_ENABLE_HOSTED
 #endif
 
+// ---------------------------------------------------------------------------
+// 自定义类型推导（E_FMT_DERIVE / E_FMT_FIELDS，实现见 format_derive.hpp）
+// ---------------------------------------------------------------------------
+// 推导输出是否带类型名：{ ax = 1.5 }（默认，省 Flash）还是 imu { ax = 1.5 }
+#ifndef EFMT_DERIVE_SHOW_TYPE
+#define EFMT_DERIVE_SHOW_TYPE 0
+#endif
+
+// 单类型最多支持多少字段/枚举取值（解析缓冲、自动推导探测、打印表共用）
+#ifndef EFMT_DERIVE_MAX_FIELDS
+#define EFMT_DERIVE_MAX_FIELDS 16
+#endif
+
+// 数组成员最多打印几个元素，超出用 ... 省略
+#ifndef EFMT_DERIVE_MAX_ARRAY_ITEMS
+#define EFMT_DERIVE_MAX_ARRAY_ITEMS 8
+#endif
+
+// 严格模式（默认开）：
+//   * 成员没有格式化器                -> 编译报错（Rust 里相当于没实现 Debug）
+//   * 有字段却找不到格式化器的聚合体  -> 编译报错（多半是宏写错了作用域，或忘了注册）
+// 设 0 则退回旧的"打印地址"行为。
+#ifndef EFMT_DERIVE_STRICT
+#define EFMT_DERIVE_STRICT 1
+#endif
+
 // 单次调用最多几个参数。每个参数在栈上占 24 B，嵌入式默认 8 个（192 B），
 // 宿主保持原来的 16 个（384 B）。
 #ifndef EFMT_MAX_FORMAT_ARGS
