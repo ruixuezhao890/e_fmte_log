@@ -171,6 +171,40 @@ Windows / Linux / **ESP-IDF 走宿主配置**（容器、std::string、ANSI、st
 | [sandbox/](sandbox/README.md) | CLion 试玩工程：打开即跑，19 条自检，覆盖主要 API 与 ETL 类型 |
 | [tests/](tests/run_check.ps1) | 验证脚本：行为检查、浮点对拍、嵌入式交叉编译体积报告 |
 
+## 性能
+
+口径：GCC x64 `-O2`，`tests/run_check.ps1 -Bench` 本机实测（libc 浮点 与 自带浮点引擎 两套配置各一轮，ns/op，越小越快）。
+
+### 格式化（efmt_bench：6 个热路径用例，20 万次取均值）
+
+| 场景 | libc 浮点 | 自带浮点引擎 |
+|---|---|---|
+| 日志行写缓冲区（`[{}] [{}:{} {}] {}` 5 参数） | 76.5 ns | **69.4 ns** |
+| `format("{}")` → std::string | 22.8 ns | **21.6 ns** |
+| 混合格式规范（`{:<12}\|{:>8.2f}\|{:#06x}`） | 312.7 ns | **186.1 ns** |
+| 三字段（`x={}, y={}, z={}`） | 106.7 ns | 111.3 ns |
+| `formatted_size` | 37.8 ns | **30.8 ns** |
+| 200 字符长文本 | 383.9 ns | **241.2 ns** |
+
+### 日志（elog_bench：级别通过/过滤两条路径 + 裸 format_to 对照）
+
+| 场景 | libc 浮点 | 自带浮点引擎 |
+|---|---|---|
+| `logger->info("boot {} {}", "ok", 42)` 完整一行 | 142.7 ns | **120.1 ns** |
+| 含浮点 `logger->info("temp {:.1f} v {} c {}", ...)` | 439.8 ns | **179.2 ns** |
+| 级别被过滤（`set_level` 短路，不格式化） | 1.3 ns | **1.2 ns** |
+| 对照：裸 `format_to` 写同一条消息 | 38.3 ns | 30.3 ns |
+
+要点：
+
+* **自带浮点引擎典型场景比 libc 快 40%+**（混合规范 312.7→186.1、200 字符长文本 383.9→241.2）；
+  浮点日志差 2.5 倍（439.8→179.2）；且不链 libc 浮点路径、不用堆，嵌入式下可整体关掉省 ~3.4 KB
+* **级别过滤几乎零开销**（1.2 ns/op）：`should_log` 在格式化之前短路，日志关掉后不影响实时路径
+* 纯整数/简单场景两套引擎接近（差值在噪声范围）；需要什么精度选什么引擎即可
+* 复现：efmt 六项 = `tests/run_check.ps1 -Bench`；elog 四项 = `tests/elog_bench.cpp`
+  （`g++ -std=c++17 -O2 -I. -Itests/include tests/elog_bench.cpp -o elogbench && ./elogbench`）
+* 嵌入式侧（Cortex-M4 `-Os`）的 **Flash / RAM / 栈** 实测见手册[第 8 章](docs/EFMT-使用手册.md)
+
 ## 验证与自测
 
 ```powershell

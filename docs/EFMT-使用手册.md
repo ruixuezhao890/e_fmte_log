@@ -102,7 +102,7 @@ int main() {
 
     // 3) 开始打印
     e_fmt::println_info("System boot");
-    e_fmt::println_info("Firmware {} build {}", "1.4.0", 20260322);
+    e_fmt::println_info("Firmware {} build {}", "1.8.0", 20260322);
     e_fmt::println_warning("battery {}%", 18);
     e_fmt::println_error("sensor 0x{:02X} timeout after {} ms", 0x1A, 250);
     e_fmt::println_info("temp={:.1f}C hum={:.1f}%", 25.5f, 60.0f);
@@ -115,7 +115,7 @@ int main() {
 
 ```
 System boot
-Firmware 1.4.0 build 20260322
+Firmware 1.8.0 build 20260322
 battery 18%
 sensor 0x1A timeout after 250 ms
 temp=25.5C hum=60.0%
@@ -781,7 +781,7 @@ static_assert(!EFMT_ENABLE_ANSI_STYLES, "嵌入式不要往串口发转义序列
 
 浮点路径的栈占用可以用宏压小（见 9.4），或者干脆关掉浮点。
 
-### 8.4 速度实测（GCC x64 `-O2`，`.`tests`run_check.ps1 -Bench`）
+### 8.4 速度实测（GCC x64 `-O2`，`tests/run_check.ps1 -Bench`）
 
 | 用例 | 优化前 | 优化后（libc 浮点） | 优化后（自带浮点） |
 |------|-------|-------------------|------------------|
@@ -924,7 +924,7 @@ format("{:9000}", 1);           // 9000 个字符，长度精确
 **Q4：程序跑着跑着 HardFault，和格式化有关吗？**
 最常见的是**栈不够**：一次 `format_to` 大约要 `24 B × 参数个数`（默认 8 个 = 192 B）+
 调用者缓冲；带浮点再叠加约 600 B。要么加大任务栈（FreeRTOS `configMINIMAL_STACK_SIZE`），
-要么降 `EFMT_MAX_FORMAT_ARGS`、关浮点。用 `-fstack-usage` + `.`tests`run_check.ps1 -Size` 可以量。
+要么降 `EFMT_MAX_FORMAT_ARGS`、关浮点。用 `-fstack-usage` + `tests/run_check.ps1 -Size` 可以量。
 
 **Q5：`format("{}", some_struct)` 打出了 `obj@0x20000040`？**
 该类型没有格式化器，走了兜底输出。用 `E_FMT_FORMATTER_FIELDS` 或 `E_FMT_FORMATTER_FN` 补上。
@@ -1479,7 +1479,7 @@ g++ -std=c++17 -O2 -Itests/include -DEFMT_USE_LIBC_PRINTF=0 -DEFMT_FLOAT_CHECK_I
 - **v1.1** 嵌入式增强：无异常、自定义输出处理器、UART/RTT/SD 支持、截断检测
 - **v1.2** 解析性能与接口一致性：单遍扫描执行、长度精确、规范解析重写、`E_FMT_STR` 编译期校验
 - **v1.3** 去掉错误码：`format_to` 改为 snprintf 语义、只依赖 C++17 标准库
-- **v1.4** 嵌入式专项优化（本版）
+- **v1.4** 嵌入式专项优化
   - **自带浮点引擎**：不依赖 libc 的 `printf`、不用堆，newlib-nano 下也能正确打印浮点；
     与 printf 逐位一致（24.6 万次随机对拍验证），比 libc 快 40%+；Cortex-M4 上一处
     `{:.2f}` 从 7133 B 降到 6552 B，并去掉 `_malloc_r/_free_r/_sbrk` 依赖
@@ -1557,5 +1557,5 @@ g++ -std=c++17 -O2 -Itests/include -DEFMT_USE_LIBC_PRINTF=0 -DEFMT_FLOAT_CHECK_I
 
 ## 反馈
 
-发现文档与实现不一致，先跑一遍 `.`tests`run_check.ps1` —— 它是本手册所有行为断言的来源，
+发现文档与实现不一致，先跑一遍 `tests/run_check.ps1` —— 它是本手册所有行为断言的来源，
 也是最快的复现路径。
