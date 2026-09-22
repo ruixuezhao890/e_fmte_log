@@ -137,6 +137,12 @@ namespace e_fmt {
 #define EFMT_DERIVE_SHOW_TYPE 0
 #endif
 
+// 自定义类型推导的多行样式（{:#}）开关：开着多 ~15 B 字符串字面量；
+// 极致省 Flash 的固件可以 -DEFMT_DERIVE_STYLE_MULTILINE=0 整个裁掉。
+#ifndef EFMT_DERIVE_STYLE_MULTILINE
+#define EFMT_DERIVE_STYLE_MULTILINE 1
+#endif
+
 // 单类型最多支持多少字段/枚举取值（解析缓冲、自动推导探测、打印表共用）
 #ifndef EFMT_DERIVE_MAX_FIELDS
 #define EFMT_DERIVE_MAX_FIELDS 16

@@ -169,6 +169,15 @@ if ((Test-Path $elog) -and $hasEtl) {
         Invoke-EfmtRun 'no-stream / no-ANSI configuration' $noStreamExe
     }
 }
+# 嵌入式配置（EFMT_ENABLE_HOSTED=0）：elog 的 ETL 字符串/容器支持在 MCU 配置下
+# 同样生效（容器由 elog.hpp 默认打开，不受 HOSTED 影响）。
+if ((Test-Path $elog) -and $hasEtl) {
+    $elogEmbExe = Join-Path $out 'elog_integration_embedded.exe'
+    $elogEmbArgs = @('-std=c++17') + $baseArgs + @('-DEFMT_ENABLE_HOSTED=0', "-I$root", (Join-Path $PSScriptRoot 'elog_integration.cpp'), '-o', $elogEmbExe)
+    if (Invoke-EfmtBuild 'elog integration (embedded configuration)' $elogEmbArgs) {
+        Invoke-EfmtRun 'elog integration (embedded)' $elogEmbExe
+    }
+}
 if ($Bench) {
     # 宿主默认走 libc 浮点；再加一轮自带引擎，方便对比两种实现的耗时
     $variants = @(

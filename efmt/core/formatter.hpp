@@ -630,7 +630,7 @@ make_format_arg(T &&value) {
                 ,
 #endif
                 "Type T does not have a formatter defined. "
-                "Use E_FMT_FORMATTER or E_FMT_FORMATTER_FN to define one, "
+                "Use E_FMT_FORMATTER_FIELDS or E_FMT_FORMATTER_FN to define one, "
                 "or define operator<< for the type.");
 
   format_arg arg;

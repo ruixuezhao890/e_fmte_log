@@ -38,19 +38,19 @@ static void uart_sink(const char *data, size_t size) {
 struct Point {
   int x, y;
 };
-E_FMT_FORMATTER_2(Point, int, x, "x", int, y, "y");
+E_FMT_FORMATTER_FIELDS(Point, x, y);
 
 struct Reading {
   float temp;
   float hum;
   uint32_t ts;
 };
-E_FMT_FORMATTER_3(Reading, float, temp, "t", float, hum, "h", uint32_t, ts, "ts");
+E_FMT_FORMATTER_FIELDS(Reading, temp, hum, ts);
 
 struct Flag {
   bool on;
 };
-E_FMT_FORMATTER_1(Flag, bool, on, "on");
+E_FMT_FORMATTER_FIELDS(Flag, on);
 
 struct Rgb {
   uint8_t r, g, b;

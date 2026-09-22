@@ -226,22 +226,43 @@ inline constexpr bool has_formatter_specialization_v =
     has_formatter_specialization<T>::value;
 
 // ============================================================================
-// 成员描述符
+// 自定义类型的输出样式：{} 单行（默认）/ {:#} 多行缩进
 // ============================================================================
-// Low-level building block used by the E_FMT_FORMATTER_1/2/3 helper macros.
-template <typename ClassType, typename MemberType, MemberType ClassType::*MemberPtr>
-struct member_descriptor {
-  using class_type = ClassType;
-  using member_type = MemberType;
-  static constexpr MemberType ClassType::*ptr = MemberPtr;
-  const char *name;
-
-  constexpr member_descriptor(const char *n) : name(n) {}
-
-  constexpr const MemberType &get(const ClassType &obj) const {
-    return obj.*ptr;
-  }
+// {:#} 读的是 format_specs 的 alt 位（# = "替代形式"），不引入新语法。
+// 两套默认风格：
+//   * make_derive_style      —— E_FMT_DERIVE / E_FMT_FIELDS（空格风 { x = 1 }）
+//   * make_descriptor_style  —— 老 FIELDS 宏（紧凑风 {x=1}，保持历史输出）
+// 嵌套成员固定默认样式（见 format_derive.hpp 的 derive_write），多行只作用于顶层。
+// 想省那十几字节字符串：-DEFMT_DERIVE_STYLE_MULTILINE=0 整个裁掉多行分支。
+struct derive_style {
+  const char *open = "{ ";
+  const char *sep = ", ";
+  const char *close = " }";
+  const char *name_sep = " = ";
 };
+
+inline derive_style make_derive_style(const format_specs &specs) {
+#if EFMT_DERIVE_STYLE_MULTILINE != 0
+  if (specs.alt && specs.type == presentation::none) {
+    return {"{\n  ", ",\n  ", "\n}", " = "};
+  }
+#else
+  (void)specs;
+#endif
+  return {};
+}
+
+inline derive_style make_descriptor_style(const format_specs &specs) {
+  derive_style s{"{", ", ", "}", "="};
+#if EFMT_DERIVE_STYLE_MULTILINE != 0
+  if (specs.alt && specs.type == presentation::none) {
+    s = {"{\n  ", ",\n  ", "\n}", "="};
+  }
+#else
+  (void)specs;
+#endif
+  return s;
+}
 
 // ============================================================================
 // 结构化格式化器辅助
@@ -255,21 +276,32 @@ struct member_descriptor_list {
 
   template <typename T, size_t... Indices>
   void format_members(format_context &ctx, const T &value,
-                      std::index_sequence<Indices...>) const {
+                      std::index_sequence<Indices...>,
+                      const derive_style &style = derive_style{"{", ", ", "}", "="}) const {
     bool first = true;
     (([&](const auto &desc) {
       if (!first) {
-        ctx.write_str(", ");
+        ctx.write_str(style.sep);
       }
       first = false;
 
       ctx.write_str(desc.name);
-      ctx.write_char('=');
+      ctx.write_str(style.name_sep);
 
       const auto &member_value = desc.get(value);
       format_member_value(ctx, member_value);
      }(std::get<Indices>(descriptors))),
      ...);
+  }
+
+  // 带括号的完整输出（open + 字段 + close）；老宏自己写括号，维持旧输出不动
+  template <typename T, size_t... Indices>
+  void format_full(format_context &ctx, const T &value,
+                   std::index_sequence<Indices...> seq,
+                   const derive_style &style) const {
+    ctx.write_str(style.open);
+    format_members(ctx, value, seq, style);
+    ctx.write_str(style.close);
   }
 
   template <typename MemberType>
@@ -295,67 +327,6 @@ struct member_descriptor_list {
       Fn(e_fmt_ctx, e_fmt_specs, e_fmt_value); \
     } \
   }; \
-  }
-
-// 2. 固定成员数量的格式化
-#define E_FMT_FORMATTER_1(Type, T1, M1, N1) \
-  namespace e_fmt::detail { \
-  template <> \
-  struct default_formatter<Type> { \
-    static void format(format_context &e_fmt_ctx, const format_specs &e_fmt_specs, \
-                       const Type &e_fmt_value) { \
-      (void)e_fmt_specs; \
-      member_descriptor_list<member_descriptor<Type, T1, &Type::M1>> \
-        list(member_descriptor<Type, T1, &Type::M1>(N1)); \
-      e_fmt_ctx.write_char('{'); \
-      list.format_members(e_fmt_ctx, e_fmt_value, std::make_index_sequence<1>{}); \
-      e_fmt_ctx.write_char('}'); \
-    } \
-  }; \
-  }
-
-#define E_FMT_FORMATTER_2(Type, T1, M1, N1, T2, M2, N2) \
-  namespace e_fmt::detail { \
-  template <> \
-  struct default_formatter<Type> { \
-    static void format(format_context &e_fmt_ctx, const format_specs &e_fmt_specs, \
-                       const Type &e_fmt_value) { \
-      (void)e_fmt_specs; \
-      member_descriptor_list<\
-        member_descriptor<Type, T1, &Type::M1>,\
-        member_descriptor<Type, T2, &Type::M2>\
-      > list(\
-        member_descriptor<Type, T1, &Type::M1>(N1),\
-        member_descriptor<Type, T2, &Type::M2>(N2)\
-      );\
-      e_fmt_ctx.write_char('{');\
-      list.format_members(e_fmt_ctx, e_fmt_value, std::make_index_sequence<2>{});\
-      e_fmt_ctx.write_char('}');\
-    }\
-  };\
-  }
-
-#define E_FMT_FORMATTER_3(Type, T1, M1, N1, T2, M2, N2, T3, M3, N3) \
-  namespace e_fmt::detail { \
-  template <> \
-  struct default_formatter<Type> { \
-    static void format(format_context &e_fmt_ctx, const format_specs &e_fmt_specs, \
-                       const Type &e_fmt_value) { \
-      (void)e_fmt_specs; \
-      member_descriptor_list<\
-        member_descriptor<Type, T1, &Type::M1>,\
-        member_descriptor<Type, T2, &Type::M2>,\
-        member_descriptor<Type, T3, &Type::M3>\
-      > list(\
-        member_descriptor<Type, T1, &Type::M1>(N1),\
-        member_descriptor<Type, T2, &Type::M2>(N2),\
-        member_descriptor<Type, T3, &Type::M3>(N3)\
-      );\
-      e_fmt_ctx.write_char('{');\
-      list.format_members(e_fmt_ctx, e_fmt_value, std::make_index_sequence<3>{});\
-      e_fmt_ctx.write_char('}');\
-    }\
-  };\
   }
 
 // ============================================================================

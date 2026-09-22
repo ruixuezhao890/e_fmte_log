@@ -134,7 +134,7 @@ println_info("{}", state::busy);                 // busy
 * 代价：每个类型约 **+150~350 B Flash**（Cortex-M4 `-Os` 实测，对比老的结构化宏）；
   带类型名输出要多 1.35 KB，所以默认关（`EFMT_DERIVE_SHOW_TYPE=1` 可开）
 * 边界（声明里有 `#if`、模板结构体、枚举非字面量初始值、>16 字段）→ 用类型内一行
-  `E_FMT_FIELDS(字段, ...)` 兜底；老写法全部继续可用
+  `E_FMT_FIELDS(字段, ...)` 兜底；老的 `E_FMT_FORMATTER_FN`/AUTO 仍可用
 
 ## v1.5 自定义类型自动派生
 
@@ -155,7 +155,7 @@ E_FMT_FORMATTER_ENUM(color, red, green, blue);   // 输出 red / green / blue
   （`detail::color`/`detail::style` …）不再互相误伤
 * 枚举现在能真正走到格式化器：以前无作用域枚举会被 ostream 的 `operator<<(int)` 抢走
 * `AUTO` 只支持简单聚合体；含 C 型数组时用 `E_FMT_FORMATTER_AUTO_N(Type, 字段数)`
-* 老的 `E_FMT_FORMATTER_1/2/3` / `_FN` 照常可用
+* 老的 `E_FMT_FORMATTER_FN` 照常可用（`E_FMT_FORMATTER_1/2/3` 已删除，用 `E_FMT_FORMATTER_FIELDS`/DERIVE 替代）
 
 ## 验证
 

@@ -96,6 +96,25 @@ E_FMT_DERIVE(struct holds_manual {       // 两种写法可以互相嵌套
   int n;
 });
 
+// ---- 限定名成员：'::' 不能被当成位域分隔符，字段名要取到最后一个标识符 ----
+namespace detail_payload {
+E_FMT_DERIVE(struct payload {
+  int v;
+});
+}  // namespace detail_payload
+
+E_FMT_DERIVE(struct with_qualified {
+  detail_payload::payload body;
+  int n;
+});
+
+#if EFMT_ENABLE_DYNAMIC_STRING
+E_FMT_DERIVE(struct with_string_member {
+  std::string label;
+  int count;
+});
+#endif
+
 E_FMT_DERIVE(enum class state {
   idle,
   busy = 5,
@@ -180,6 +199,24 @@ int main() {
 
   // ---- 命名空间里的类型 ----
   CHECK_TEXT(text("{}", app::cfg{3, true}), "{ retry = 3, verbose = 1 }");
+
+  // ---- 限定名成员（::）----
+  CHECK_TEXT(text("{}", with_qualified{detail_payload::payload{5}, 2}),
+             "{ body = { v = 5 }, n = 2 }");
+#if EFMT_ENABLE_DYNAMIC_STRING
+  CHECK_TEXT(text("{}", with_string_member{std::string("imu"), 3}),
+             "{ label = imu, count = 3 }");
+#endif
+
+  // ---- 样式：{:#} 多行缩进（EFMT_DERIVE_STYLE_MULTILINE 默认开）----
+  CHECK_TEXT(text("{:#}", imu{1.5f, 2.5f, 3.5f}),
+             "{\n  ax = 1.5,\n  ay = 2.5,\n  az = 3.5\n}");
+  CHECK_TEXT(text("{:#}", one_field{7}), "{\n  only = 7\n}");
+  // 嵌套成员固定单行（缩进不乱），只有顶层多行
+  CHECK_TEXT(text("{:#}", nested{imu{1.0f, 2.0f, 3.0f}, raw_pair{4, 5}, 6}),
+             "{\n  sample = { ax = 1, ay = 2, az = 3 },\n  pair = (4, 5),\n  n = 6\n}");
+  // 类型内一行 E_FMT_FIELDS 同样支持
+  CHECK_TEXT(text("{:#}", manual_fields{3, true}), "{\n  retry = 3,\n  verbose = 1\n}");
 
   // ---- 枚举 ----
   CHECK_TEXT(text("{}", state::idle), "idle");

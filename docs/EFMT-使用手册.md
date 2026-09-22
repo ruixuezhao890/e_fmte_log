@@ -1,7 +1,7 @@
 # EFmt 使用手册（嵌入式 C++ 格式化库）
 
 > 面向第一次接触 EFmt 的嵌入式开发者：从"复制粘贴就能跑"到"知道每个宏花多少 Flash"。
-> 版本：v1.4（嵌入式专项优化版） · 适用 C++17 及以上 · 头文件库，无构建系统依赖
+> 版本：v1.8（elog 支持 ETL 类型） · 适用 C++17 及以上 · 头文件库，无构建系统依赖
 
 ---
 
@@ -321,8 +321,9 @@ format("{{{{value}}}}"); // "{{value}}"
 | `const char*` / `char[]` | ✓ | 带长度，不会 `strlen` 越界 |
 | `std::string` / `std::string_view` | ✓ | `std::string` 需 `EFMT_ENABLE_DYNAMIC_STRING` |
 | 任意指针 | ✓ | `0x...` 十六进制；空指针 `(nil)` |
-| `std::vector` 等容器 | 宿主默认 ✓ / 嵌入式默认 ✗ | 见 5.4 |
+| `std::vector` 等容器 | 宿主默认 ✓ / 嵌入式默认 ✗ | 见 5.5；**elog 用户默认 ✓**（见 13.8） |
 | `std::tuple` / `std::pair` | 同上 | `(a, b)` / `(k: v)` |
+| `etl::string` / `etl::string_view` / `etl::optional` 等 ETL 类型 | 仅 elog | 见 [13.8 ETL 类型支持](#138-etl-类型支持elog-自带无需配置) |
 
 字符串参数是**按长度**传递的，所以空字符串、内嵌 `'\0'` 的缓冲区都安全：
 
@@ -340,13 +341,13 @@ format("[{}]", std::string_view(raw, 3));   // "[a\0b]" 里的 3 个字符原样
 
 ```cpp
 struct Point { int x, y; };
-E_FMT_FORMATTER_2(Point, int, x, "x", int, y, "y");
+E_FMT_FORMATTER_FIELDS(Point, x, y);
 
 struct Reading { float temp; float hum; uint32_t ts; };
-E_FMT_FORMATTER_3(Reading, float, temp, "t", float, hum, "h", uint32_t, ts, "ts");
+E_FMT_FORMATTER_FIELDS(Reading, temp, hum, ts);
 
 struct Flag { bool on; };
-E_FMT_FORMATTER_1(Flag, bool, on, "on");
+E_FMT_FORMATTER_FIELDS(Flag, on);
 
 Point p{10, 20};
 println_info("{}", p);        // "{x=10, y=20}"
@@ -400,7 +401,7 @@ format("{}", Vec{1.5f, 2.5f});   // 走 <sstream>；嵌入式默认关闭（EFMT
 
 **两个容易误解的点**：
 
-1. **方式 1（`E_FMT_FORMATTER_1/2/3`）会忽略外层的格式规范**：成员一律按默认格式输出，
+1. **方式 1（`E_FMT_FORMATTER_FIELDS`）会忽略外层的格式规范**：成员一律按默认格式输出，
    所以 `format("{:s}", flag)` 里的 `{:s}` 不会传到成员上（bool 成员仍然是 `{on=1}`）。
    需要控制成员格式就用方式 2/3 自己写。
 2. **宽度/对齐要自己接**：写了 `ctx.write_char('#') …` 再 `write_aligned(...)` 的话，
@@ -502,7 +503,7 @@ struct box {
 两种写法可以互相嵌套（`E_FMT_FIELDS` 的类型作为 `E_FMT_DERIVE` 类型的成员，反之亦然），
 输出风格一致。
 
-**兜底写法二：老的结构化宏**（`E_FMT_FORMATTER_1/2/3`、`E_FMT_FORMATTER_FN`、`E_FMT_FORMATTER_AUTO` 等）继续可用，不需要改既有代码。
+**兜底写法二：**`E_FMT_FORMATTER_FN` / `E_FMT_FORMATTER_AUTO` 等仍可用。`E_FMT_FORMATTER_1/2/3`（抄三遍写法）已删除，请改用 `E_FMT_FORMATTER_FIELDS` 或 `E_FMT_DERIVE`。
 
 **输出与体积开关**
 
@@ -523,12 +524,25 @@ format("{}", std::make_tuple(1, 2.5, "x"));     // "(1, 2.5, x)"
 format("{}", std::make_pair("k", 7));           // "(k: 7)"
 ```
 
-嵌入式默认**关闭**（省 Flash，也避免 MCU 日志里出现容器）；需要时
-`-DEFMT_ENABLE_CONTAINER_FORMAT=1`。关闭后写容器会**编译报错**（不会静默）。
+独立使用 efmt 时嵌入式默认**关闭**（省 Flash，也避免 MCU 日志里出现容器）；
+需要时 `-DEFMT_ENABLE_CONTAINER_FORMAT=1`。**elog 用户默认已打开**（见
+[13.8](#138-etl-类型支持elog-自带无需配置)），MCU 上直接能打。
+
+关闭后的行为：普通容器（`std::vector` / `etl::vector` 等）参数退化为 `obj@0x...`
+地址兜底，不会静默打错内容；聚合数组（`std::array` / `etl::array`）在
+`EFMT_DERIVE_STRICT=1` 下直接编译报错（提示找不到格式化器）。
+
+> 实测（Cortex-M4 `-Os`）：容器宏开着但不用容器 = **零 Flash 开销**（模板惰性
+> 实例化）；真的打一个 `etl::vector<int,8>` 才 +260 B。因此 elog 默认打开它没有
+> 隐性成本。
 
 ---
 
 ## 6. 输出与打印
+
+> `println_*` 是无状态的快捷打印。**要分级、要过滤、要上线关日志**的日志直接用 elog
+> （[第 13 章](#13-与-elog-一起用)）；elog 的 `stdout_sink()` 走的就是这里的全局输出处理器，
+> 两条路可以输出到同一条通道。
 
 ### 6.1 输出处理器：一个函数指针搞定
 
@@ -655,7 +669,7 @@ print_styled(with_color(color::yellow) | style::bold | style::underline, "styled
 | `EFMT_ENABLE_STDIO` | `HOSTED` | 0 | 默认输出到 stdout | 必须自己 `set_output_handler` |
 | `EFMT_ENABLE_FLOAT` | 1 | 1 | 浮点通道 | **写浮点参数直接编译报错**（省 ~3.4 KB） |
 | `EFMT_USE_LIBC_PRINTF` | 1 | 0 | 浮点是否借用 libc 的 `snprintf` | 用自带引擎（无堆、newlib-nano 也能用） |
-| `EFMT_ENABLE_CONTAINER_FORMAT` | `HOSTED` | 0 | 容器/tuple/pair 格式化 | 写 `std::vector` 会编译报错 |
+| `EFMT_ENABLE_CONTAINER_FORMAT` | `HOSTED` | 0 | 容器/tuple/pair 格式化 | 关闭后打容器退化为 `obj@0x...`（聚合数组在 STRICT 下编译报错）；**elog 默认已开** |
 | `EFMT_MAX_FORMAT_ARGS` | 16 | 8 | 单次调用参数上限（每个约 24 B 栈） | 超出的调用编译报错 |
 | `EFMT_PRINT_BUFFER_SIZE` | 256 | 256 | `print/println` 栈缓冲 | 单行超长被截断 |
 | `EFMT_STRING_BUFFER_SIZE` | 256 | — | `format()` 的一次性栈缓冲 | 超长会二次分配（只影响宿主） |
@@ -748,7 +762,7 @@ static_assert(!EFMT_ENABLE_ANSI_STYLES, "嵌入式不要往串口发转义序列
 | 版本 | .text | 对比 |
 |------|-------|------|
 | 完全不格式化（基线） | 452 B | — |
-| 老的结构化宏 `E_FMT_FORMATTER_3(imu, float, ax, "ax", …)` | 6548 B | 基准 |
+| 老的结构化宏 `E_FMT_FORMATTER_3`（抄三遍写法，**已删除**；数字为历史测量） | 6548 B | 基准 |
 | **`E_FMT_DERIVE(struct imu { … });`（默认）** | **6692 B** | **+144 B** |
 | `E_FMT_DERIVE` + `EFMT_DERIVE_SHOW_TYPE=1`（带类型名） | 8044 B | +1496 B |
 | 嵌套两个类型：老宏 7728 B / `E_FMT_DERIVE` 8080 B | | +352 B |
@@ -781,6 +795,8 @@ static_assert(!EFMT_ENABLE_ANSI_STYLES, "嵌入式不要往串口发转义序列
 
 \* 该行是 10 万次量级的抖动范围（±10%），重复运行会在 71–80 ns 之间；有意义的对比是同一
 二进制内的相对差异：**自带浮点引擎比 libc 的 `snprintf` 快 40%+**，elog 单遍直写快 23%。
+
+elog 的逐项实测（含"被过滤级别"的零成本证据）见 [13.6](#136-elog-性能实测gcc-x64--o2可复现)。
 
 ---
 
@@ -876,7 +892,7 @@ for (const auto& p : points) {
 | 参数个数不匹配（用了 `E_FMT_STR`） | `Number of arguments does not match format string` |
 | 参数超过 `EFMT_MAX_FORMAT_ARGS` | `Too many format arguments (see max_format_args)` |
 | 关掉浮点后仍传浮点 | `EFMT_ENABLE_FLOAT=0: 本配置不编译浮点格式化…` |
-| 关掉容器后仍传容器 | `no matching function for call to 'make_format_arg(std::vector<int>&)'` |
+| 关掉容器后仍传容器 | 退化为 `obj@0x...`（聚合数组如 `std::array` / `etl::array` 在 `EFMT_DERIVE_STRICT=1` 下编译报错） |
 | 类型没有格式化器 | `Type T does not have a formatter defined…`（宿主下会退化成 `obj@0x...`） |
 
 ### 10.4 运行期不会崩
@@ -911,14 +927,16 @@ format("{:9000}", 1);           // 9000 个字符，长度精确
 要么降 `EFMT_MAX_FORMAT_ARGS`、关浮点。用 `-fstack-usage` + `.`tests`run_check.ps1 -Size` 可以量。
 
 **Q5：`format("{}", some_struct)` 打出了 `obj@0x20000040`？**
-该类型没有格式化器，走了兜底输出。用 `E_FMT_FORMATTER_1/2/3` 或 `E_FMT_FORMATTER_FN` 补上。
+该类型没有格式化器，走了兜底输出。用 `E_FMT_FORMATTER_FIELDS` 或 `E_FMT_FORMATTER_FN` 补上。
 
 **Q6：`std::string s = format(...)` 在嵌入式编译不过？**
 嵌入式默认 `EFMT_ENABLE_DYNAMIC_STRING=0`（无 `std::string`）。用 `format_to(char*, size)`，
 或显式开 `-DEFMT_ENABLE_DYNAMIC_STRING=1`（前提是你的工具链有完整 `std::string`）。
 
-**Q7：`format("{}", std::vector<int>{1,2,3})` 编译不过？**
-嵌入式默认关容器格式化。`-DEFMT_ENABLE_CONTAINER_FORMAT=1` 打开（会多占 Flash）。
+**Q7：`format("{}", std::vector<int>{1,2,3})` 打出了 `obj@0x...`？**
+独立使用 efmt 时嵌入式默认关容器格式化：关闭后容器参数退化为地址兜底（`EFMT_DERIVE_STRICT=1`
+下聚合数组如 `std::array` / `etl::array` 会直接编译报错）。`-DEFMT_ENABLE_CONTAINER_FORMAT=1`
+打开即可——实测不用容器零开销，用容器才 +260 B（Cortex-M4 `-Os`）。**elog 用户默认已打开**，无需任何配置。
 
 **Q8：小数四舍五入和我想的不一样？**
 printf 与 EFmt 都用 **round-half-even**（银行家舍入）：`{:.0f}` 对 `0.5` 是 `0`、对 `2.5` 是 `2`。
@@ -1055,7 +1073,7 @@ E_FMT_FORMATTER_FIELDS(app::cfg, retry, verbose); // ✗ 宏在全局 → 编译
 | `printf("%s", std::string(...).c_str())` | `println_info("{}", sv)`（直接传 `string_view`） |
 | `printf("{}", ...)` 拼字符串 + `strcat` | `format_to(buf, n, "{}{}", a, b)` |
 | `printf("%zu", size)` | `println_info("{}", size)`（类型自动） |
-| 自定义类型 + `operator<<` + `ostringstream` | `E_FMT_FORMATTER_FN` / `E_FMT_FORMATTER_2` |
+| 自定义类型 + `operator<<` + `ostringstream` | `E_FMT_FORMATTER_FN` / `E_FMT_FORMATTER_FIELDS` |
 
 同样的迁移也适用于 `ELOG_*`：
 
@@ -1073,7 +1091,82 @@ ELOG_INFO("temp={:.1f}", t);      // 自动带上文件/行号/函数
 `elog` 是同一仓库里的日志库，构建在 EFmt 之上（`elog/elog.hpp`），依赖 ETL
 （`middleware/etl`），提供分级、多 sink、级别过滤。
 
-### 13.1 最小可运行例子
+### 13.1 `println_*` 还是 elog：怎么选
+
+两者**共用同一套引擎**：格式化都走 `format_to`，颜色都取 `detail::styles::info()` 这类样式，
+不是两套实现。差别在职责——`println_*` 是"无状态的一次性彩色打印"，elog 是"有状态的日志系统"：
+
+| 能力 | efmt `println_info` 等 | elog `ELOG_INFO` |
+|------|------------------------|------------------|
+| 运行期关掉低级别（release 关 debug） | ✗ 没有，调了就打 | ✓ `set_level` + `level::off` |
+| 输出带 `[级别] [文件:行 函数]` | ✗ 只上颜色 | ✓ 宏自动带源位置 |
+| 多个命名 logger、各自独立 sink | ✗ 全局一条输出道 | ✓ 注册表 + 每 logger 独立 sink |
+| trace / critical 级别 | ✗ 家族里没有 | ✓ 六档齐全 |
+| 换行 | ✓ | ✓ |
+
+怎么选：
+
+* **调试初期 / 一次性打印**：`println_info`、`println_debug` 一行搞定，零概念；
+* **要上线、要分级、要能关日志**：用 elog，`ELOG_*` 走默认 logger，`ELOG_LOGGER_*` 指定
+  logger，还能 `set_level` 在运行期切换。
+
+两者可以**输出到同一条通道**：`e_log::stdout_sink()` 内部用的就是 efmt 的全局输出处理器
+（`get_output_handler()`），同一条串口上混用不打架。
+
+### 13.2 从初始化到上线：完整用法
+
+日志系统在**启动早期**初始化一次，之后业务代码只碰宏：
+
+```cpp
+#include <elog/elog.hpp>
+
+// 业务代码只暴露这 4 个宏（再包一层，将来换库只改一处）
+#define APP_LOG_DEBUG(...) ELOG_DEBUG(__VA_ARGS__)
+#define APP_LOG_INFO(...)  ELOG_INFO(__VA_ARGS__)
+#define APP_LOG_WARN(...)  ELOG_WARN(__VA_ARGS__)
+#define APP_LOG_ERROR(...) ELOG_ERROR(__VA_ARGS__)
+
+static bool uart_sink(const char* data, std::size_t size, void* /*user*/) {
+    HAL_UART_Transmit(&huart1, (uint8_t*)data, (uint16_t)size, 100);
+    return true;                 // false = 写失败（当前只有 multi_sink 会统计）
+}
+
+void logging_init() {
+    // 第一个创建的 logger 自动成为默认 logger
+    e_log::logger* app = e_log::create_logger(
+        "app", e_log::make_sink(&uart_sink), e_log::level::debug);
+    if (!app) {
+        return;                  // 重名 / 注册表满 / 名字非法
+    }
+
+    // 双输出：串口 + efmt 全局输出处理器（前提：已 set_output_handler 接过 println_* 的通道）
+    // 注意 multi_sink 必须活得比用它建的 logger 长，放静态区。
+    static e_log::multi_sink dual;
+    (void)dual.add_sink(e_log::make_sink(&uart_sink));
+    (void)dual.add_sink(e_log::make_efmt_sink(e_fmt::get_output_handler()));
+    e_log::logger* bus = e_log::create_logger("bus", dual.output_sink(), e_log::level::info);
+
+    e_log::set_default_logger("app");   // 显式指定默认（可省略）
+}
+
+void app_loop() {
+    APP_LOG_INFO("boot {} {}", "ok", 42);
+    APP_LOG_WARN("battery low: {}%", 15);
+    APP_LOG_ERROR("sensor {} failed", 3);
+}
+```
+
+要点：
+
+* **上线前关日志**：`app->set_level(e_log::level::warn)` 或 `level::off`。被过滤的级别在**格式化
+  之前**短路，实测约 1 ns/行（见 13.6），发布固件可以留着日志代码不拆；
+* **单行放不下**：`ELOG_MAX_RECORD_SIZE` 整行缓冲溢出时**整行丢弃**（不输出半行）；栈紧的 MCU
+  调小它换栈（见 13.5）；
+* **颜色**：嵌入式默认 `ELOG_ENABLE_COLOR=0`（跟随 `EFMT_ENABLE_ANSI_STYLES`），串口不会出现
+  `ESC[34m`；
+* **多 sink**：`multi_sink::add_sink` 返回 `bool`，失败说明 sink 无效或槽位满（最多 4 个）。
+
+### 13.3 最小可运行例子
 
 ```cpp
 #include <elog/elog.hpp>
@@ -1084,11 +1177,11 @@ static bool uart_sink(const char* data, std::size_t size, void* /*user*/) {
 }
 
 int main() {
-    auto logger = e_log::create_logger("app", e_log::make_sink(&uart_sink), e_log::level::info);
-    if (!logger.has_value()) {
-        return -1;                    // errc::duplicate_logger_name / registry_full ...
+    e_log::logger* logger = e_log::create_logger("app", e_log::make_sink(&uart_sink), e_log::level::info);
+    if (!logger) {
+        return -1;                    // 重名 / 注册表满 / 名字非法
     }
-    logger.value()->info("boot {} {}", "ok", 42);
+    logger->info("boot {} {}", "ok", 42);
     ELOG_WARN("battery low: {}%", 15);          // 用默认 logger + 自动文件/行号
     ELOG_LOGGER_ERROR(*logger, "sensor {}", 3); // 指定 logger
     return 0;
@@ -1101,24 +1194,24 @@ int main() {
 [info] [main.cpp:12 main] boot ok 42
 ```
 
-### 13.2 关键接口
+### 13.4 关键接口
 
 | 接口 | 说明 |
 |------|------|
-| `e_log::create_logger(name, sink, level)` | 建日志器，返回 `result<logger*>`；名字 ≤ 31 字符、最多 8 个、不可重名 |
-| `e_log::get(name)` / `default_logger()` / `set_default_logger(...)` | 查找 / 取默认 / 设默认 |
+| `e_log::create_logger(name, sink, level)` | 建日志器，返回 `logger*`，失败为 `nullptr`；名字 ≤ 31 字符、最多 8 个、不可重名 |
+| `e_log::get(name)` / `default_logger()` | 查找 / 取默认；找不到或未设为 `nullptr` |
 | `logger::set_level(level)` / `should_log(level)` | 运行期过滤（trace→critical→off） |
-| `logger::info(...)` / `warn` / `error` … | 直接打（失败被忽略） |
-| `logger::try_info(...)` … | 返回 `void_result`：`errc::message_too_long` / `sink_write_failed` 等可查 |
-| `e_log::multi_sink` | 一个 logger 挂多个 sink（最多 4 个），`add_sink(...)` 收集状态 |
+| `logger::info(...)` / `warn` / `error` … | 直接打；放不下的整行静默丢弃 |
+| `e_log::set_default_logger(...)` | 设默认 logger，失败返回 `false` |
+| `e_log::multi_sink` | 一个 logger 挂多个 sink（最多 4 个），`add_sink(...)` 失败返回 `false` |
 | `ELOG_INFO(...)` 等宏 | 自动带 `__FILE__/__LINE__/__func__` |
 
-### 13.3 elog 的裁剪宏
+### 13.5 elog 的裁剪宏
 
 | 宏 | 默认 | 说明 |
 |----|------|------|
 | `ELOG_MAX_LOGGERS` | 8 | 日志器槽位（每个约 64 B 静态 RAM） |
-| `ELOG_MAX_RECORD_SIZE` | 384 | 单行日志栈缓冲（前缀 + 消息）；溢出返回 `message_too_long` |
+| `ELOG_MAX_RECORD_SIZE` | 384 | 单行日志栈缓冲（前缀 + 消息）；放不下的一行整体丢弃 |
 | `ELOG_ENABLE_COLOR` | `EFMT_ENABLE_ANSI_STYLES` | 是否给日志上色（嵌入式默认关） |
 
 ```cpp
@@ -1126,7 +1219,30 @@ int main() {
 -DELOG_MAX_LOGGERS=4 -DELOG_MAX_RECORD_SIZE=128
 ```
 
-### 13.4 v1.4 对 elog 的优化（为什么它变快了）
+### 13.6 elog 性能实测（GCC x64 `-O2`，可复现）
+
+`tests/run_check.ps1 -Bench` 现在含 elog 基准（`tests/elog_bench.cpp`），同一份源码编
+libc 浮点 / 自带浮点两轮，当前实测：
+
+| 用例 | libc 浮点 | 自带浮点 |
+|------|----------|---------|
+| 一行 2 参数（`info("boot {} {}", "ok", 42)`，含前缀 + 换行） | 139.8 ns | **128.0 ns** |
+| 一行含 `{:.1f}`（3 参数） | 456.7 ns | **185.0 ns** |
+| 级别被过滤（`level::error` 下打 `debug`） | 1.2 ns | 1.2 ns |
+| 对照：裸 `format_to` 同一条消息 | 35.3 ns | 33.2 ns |
+
+要点：
+
+* **一行完整日志 ≈ 130 ns**（x64 `-O2`）：前缀和消息单遍直写进同一块记录缓冲，无二次复制；
+* **浮点用自带引擎快约 2.5 倍**（185 vs 457 ns）——嵌入式默认自带引擎的原因之一，另一个是
+  不拉进 newlib 的 `malloc/free`（见 9.1）；
+* **被过滤的日志几乎零成本**（1.2 ns）：`should_log` 在格式化之前短路——发布版调高 logger
+  级别后，日志代码可以原样留着；
+* efmt 本体核心格式化同样快（`format("x={} y={} z={}")` 约 105 ns，见 8.4 同一轮实测）。
+
+---
+
+### 13.7 v1.4 对 elog 的优化（为什么它变快了）
 
 旧实现每写一行日志要做两遍完整格式化：先把消息格式化到 `payload[257]`，再把
 `"[{}] [{}:{} {}] {}"` 连 payload 一起格式化进 `record[385]`（payload 被当普通字符串又抄一遍）。
@@ -1136,6 +1252,39 @@ int main() {
 * 嵌入式下日志帧从 960 B 降到 896 B（`-fstack-usage` 实测）；
 * 一行 2 参数日志 197 → 152 ns（x64 `-O2` 实测）；
 * 参数改为按 `const&` 转发，不再复制实参（传 `std::string` / 自定义类型时省一次拷贝）。
+
+### 13.8 ETL 类型支持（elog 自带，无需配置）
+
+elog 依赖 ETL（`middleware/etl`），也顺带把 ETL 常用类型接进了格式化体系。
+**只要包含 `<elog/elog.hpp>` 就能直接用，不需要任何宏**：
+
+```cpp
+#include <elog/elog.hpp>
+
+etl::string<32> name = "imu";
+etl::vector<int, 8> raw{1, 2, 3};          // ETL 静态容器：无堆
+ELOG_INFO("data: str={} vec={}", name, raw);
+// [info] [main.cpp:23 main] data: str=imu vec=[1, 2, 3]
+```
+
+| ETL 类型 | 输出 | 说明 |
+|---|---|---|
+| `etl::string<N>` / `etl::istring` / `etl::string_view` | 文本 | 宽度/精度/对齐等格式规范照常生效 |
+| `etl::vector` / `etl::list` / `etl::deque` / `etl::set` / `etl::multiset` / `etl::forward_list` / `etl::array` / `etl::span` / `etl::circular_buffer` | `[a, b, c]` | 通用迭代器通道自动覆盖 |
+| `etl::map` / `etl::multimap` / `etl::flat_map` / `etl::unordered_map` 等关联容器 | `{k: v, ...}` | 自动识别 |
+| `etl::optional<T>` | 有值打值，空打 `nullopt` | |
+| `etl::pair<A,B>` | `(a: b)` | 与 `std::pair` 风格一致 |
+| `etl::variant<Ts...>` | 当前活跃值 | C++17（`etl::visit`） |
+
+要点：
+
+* **容器默认打开**：elog 在包含 efmt 前把 `EFMT_ENABLE_CONTAINER_FORMAT` 默认置 1
+  （Cortex-M4 `-Os` 实测：不用容器零 Flash 开销，用容器 +260 B 左右），所以 MCU 上打
+  `etl::vector` / `etl::map` 开箱即用；仍可用 `-DEFMT_ENABLE_CONTAINER_FORMAT=0` 关掉。
+* **`etl::queue` / `etl::stack` / `etl::priority_queue` / `etl::bitset`** 是容器
+  **适配器/位集**，没有迭代器接口——与 `std::queue` 等一样不支持（打印退化为 `obj@0x...`）。
+* 实现是 elog 层对 `e_fmt::formatter` 的偏特化，**不修改 efmt 核心**；efmt 独立使用
+  （不包含 elog）时 ETL 类型不在支持列表里。
 
 ---
 
@@ -1194,10 +1343,8 @@ namespace detail { class output_handler_scope { ... }; }  // RAII 临时改道
 ### 14.4 自定义类型与样式
 
 ```cpp
-E_FMT_FORMATTER_1(Type, T1, member1, "name1")
-E_FMT_FORMATTER_2(Type, T1, m1, "n1", T2, m2, "n2")
-E_FMT_FORMATTER_3(Type, T1, m1, "n1", T2, m2, "n2", T3, m3, "n3")
-E_FMT_FORMATTER_FN(Type, lambda)
+// 老写法 E_FMT_FORMATTER_1/2/3 已删除（抄"类型+成员名+显示名"三遍）；要"只列字段名"用下面的 FORMATTER_FIELDS
+E_FMT_FORMATTER_FN(Type, lambda)                 // 完全自定义输出（最灵活）
 
 E_FMT_DERIVE(struct imu { float ax, ay, az; });   // 声明即推导（推荐）
 E_FMT_DERIVE(enum class state { idle, busy = 5, fault });
@@ -1212,6 +1359,23 @@ E_FMT_STR("literal")            E_FMT_DECLARE_STR(name, "literal")
 
 with_color(color)   with_colors(fg, bg)   with_style(style)   style_a | style_b
 detail::styles::error() / warning() / info() / success() / debug() / muted() / highlight()
+**输出样式：{} 单行 / {:#} 多行缩进**（`E_FMT_DERIVE`、`E_FMT_FIELDS`、`E_FMT_FORMATTER_FIELDS` 都支持，读取格式规格里现成的 `#` = 替代形式位）：
+
+    E_FMT_DERIVE(struct person { int age; float weight; std::string name; });
+    printf("%s\n", format("{}", person{18, 1.0f, "xiaoming"}).c_str());
+    // { age = 18, weight = 1, name = xiaoming }
+
+    printf("%s\n", format("{:#}", person{18, 1.0f, "xiaoming"}).c_str());
+    // {
+    //   age = 18,
+    //   weight = 1,
+    //   name = xiaoming
+    // }
+
+- 嵌套成员固定单行，多行只作用于顶层（缩进不乱）。
+- 老宏 `E_FMT_FORMATTER_FN` 仍是单行（保持历史输出）。
+- 开关：`EFMT_DERIVE_STYLE_MULTILINE`（默认 1；固件想省那 ~15 B 字符串就 -D=0，`{:#}` 自动退化为单行）。
+
 ```
 
 ---
@@ -1288,6 +1452,7 @@ g++ -std=c++17 -O2 -Itests/include -DEFMT_USE_LIBC_PRINTF=0 -DEFMT_FLOAT_CHECK_I
 |----|---------------------|------|---------|
 | `EFMT_ENABLE_HOSTED` | 自动 | 总开关 | `-DEFMT_ENABLE_HOSTED=0` 强制嵌入式 |
 | `EFMT_DERIVE_SHOW_TYPE` | 0 | 推导输出是否带类型名 | 开它 +1.35 KB Flash（Cortex-M4） |
+| `EFMT_DERIVE_STYLE_MULTILINE` | 1 | `{:#}` 多行缩进是否编进去 | 关它省 ~15 B 字符串，`{:#}` 退化为单行 |
 | `EFMT_DERIVE_MAX_FIELDS` | 16 | 单类型字段/取值上限 | 更大结构体时调大 |
 | `EFMT_DERIVE_MAX_ARRAY_ITEMS` | 8 | 数组成员最多打几个 | 缓冲区想全打就调大 |
 | `EFMT_DERIVE_STRICT` | 1 | 成员缺格式化器即编译错误 | 设 0 退回 `obj@地址` |
@@ -1298,7 +1463,7 @@ g++ -std=c++17 -O2 -Itests/include -DEFMT_USE_LIBC_PRINTF=0 -DEFMT_FLOAT_CHECK_I
 | `EFMT_USE_LIBC_PRINTF` | 1 / 0 | 浮点实现二选一 | 嵌入式保持 0 |
 | `EFMT_FLOAT_BIGNUM_LIMBS` | 48 / 48 | 浮点精度上限与栈 | 精度需求高时调 80 |
 | `EFMT_FLOAT_DIGIT_GROUPS` | 48 / 48 | 浮点输出位数上限与栈 | 极端精度时调 120 |
-| `EFMT_ENABLE_CONTAINER_FORMAT` | `HOSTED` / 0 | 容器/tuple 格式化 | 需要就开 |
+| `EFMT_ENABLE_CONTAINER_FORMAT` | `HOSTED` / 0 | 容器/tuple 格式化 | efmt 独立用需就开；**elog 默认 1**（MCU 也可打 ETL 容器） |
 | `EFMT_ENABLE_DYNAMIC_STRING` | `HOSTED` / 0 | `std::string` 重载 | ESP-IDF 上可开 |
 | `EFMT_ENABLE_STREAM_API` | `HOSTED` / 0 | `ostream` 接口 | 桌面调试 |
 | `EFMT_ENABLE_STREAM_FALLBACK` | `STREAM_API && HOSTED` / 0 | `operator<<` 兜底 | 嵌入式别开 |
@@ -1333,6 +1498,20 @@ g++ -std=c++17 -O2 -Itests/include -DEFMT_USE_LIBC_PRINTF=0 -DEFMT_FLOAT_CHECK_I
     交叉编译体积报告
 
 ---
+
+- **v1.8** elog 支持 ETL 类型（本版）
+  - elog 层新增 ETL 类型格式化：`etl::string<N>` / `etl::istring` / `etl::string_view`
+    → 文本（格式规范全支持）、`etl::optional` → 值或 `nullopt`、`etl::pair` → `(a: b)`、
+    `etl::variant` → 当前活跃值（C++17）；ETL 容器（vector/map/list/deque/set/span/array/
+    circular_buffer/...）走通用迭代器通道自动覆盖，无需特化
+  - elog 默认打开容器格式化（`EFMT_ENABLE_CONTAINER_FORMAT=1`，可 `-D...=0` 关）：
+    Cortex-M4 `-Os` 实测不用容器零开销、用 `etl::vector<int,8>` +260 B
+  - 修掉便捷 API 按值传参：`logger->trace/debug/info/warn/error/critical` 与同名自由函数
+    统一改 `const Args&...` 转发（此前 `etl::istring` 等不可拷贝类型会编译失败，字符串参数被白拷贝）
+  - 修正容器关闭后的行为口径：非聚合容器打印 `obj@0x...`（不是编译报错）；聚合数组
+    （`std::array` / `etl::array`）在 `EFMT_DERIVE_STRICT=1` 下仍编译报错
+  - 测试：`tests/elog_integration.cpp` 增加 ETL 断言，宿主 + 嵌入式（`EFMT_ENABLE_HOSTED=0`）
+    两配置跑；`run_check.ps1` 新增嵌入式 elog pass
 
 - **v1.7** 修掉"宏写错作用域静默失效"
   - 老宏（`E_FMT_FORMATTER_FIELDS` / `_ENUM` / `_AUTO` / `_AUTO_N`）写在类型命名空间

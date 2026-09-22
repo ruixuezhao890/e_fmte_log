@@ -57,7 +57,7 @@ struct point {
   int x;
   int y;
 };
-E_FMT_FORMATTER_2(point, int, x, "x", int, y, "y");
+E_FMT_FORMATTER_FIELDS(point, x, y);
 
 struct rgb_color {
   int r;
@@ -74,7 +74,7 @@ E_FMT_FORMATTER_FN(rgb_color, [](format_context &ctx, const format_specs &,
 struct temperature {
   double celsius;
 };
-E_FMT_FORMATTER_1(temperature, double, celsius, "celsius");
+E_FMT_FORMATTER_FIELDS(temperature, celsius);
 
 // 自定义格式化器内再次调用 format：验证自定义参数不依赖共享状态
 struct nested {

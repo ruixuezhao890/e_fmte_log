@@ -5,10 +5,18 @@
 #include <cstdint>
 #include <cstring>
 
+// elog 是日志库，容器能打是日志能力的一部分：ETL 容器（vector/map/...）在
+// MCU 上是常用日志载荷，这里给 elog 用户默认打开容器格式化（实测：不用容器
+// 时零 Flash 开销，模板惰性实例化；用容器才 +260 B 左右）。
+// 仍可用 -DEFMT_ENABLE_CONTAINER_FORMAT=0 关掉（命令行定义先于本文件、优先）。
+// efmt 核心自身不受影响：独立使用时仍维持 HOSTED 语义（宿主开 / 嵌入式关）。
+#ifndef EFMT_ENABLE_CONTAINER_FORMAT
+#define EFMT_ENABLE_CONTAINER_FORMAT 1
+#endif
+
 #include <middleware/efmt/core/format.hpp>
 #include <middleware/efmt/core/format_output.hpp>
 #include <middleware/etl/array.h>
-#include <middleware/etl/expected.h>
 
 namespace e_log {
 
@@ -25,27 +33,6 @@ enum class level : std::uint8_t {
   critical,
   off
 };
-
-enum class errc : std::uint8_t {
-  success = 0,
-  invalid_name,
-  name_too_long,
-  duplicate_logger_name,
-  registry_full,
-  logger_not_found,
-  default_logger_not_set,
-  invalid_sink,
-  sink_list_full,
-  sink_write_failed,
-  message_too_long
-};
-
-template <typename T> using result = etl::expected<T, errc>;
-using void_result = etl::expected<void, errc>;
-
-inline auto make_unexpected(errc error) {
-  return etl::unexpected<errc>(error);
-}
 
 inline const char *to_string(level value) {
   switch (value) {
@@ -68,35 +55,6 @@ inline const char *to_string(level value) {
   }
 }
 
-inline const char *to_string(errc value) {
-  switch (value) {
-  case errc::success:
-    return "success";
-  case errc::invalid_name:
-    return "invalid name";
-  case errc::name_too_long:
-    return "logger name too long";
-  case errc::duplicate_logger_name:
-    return "duplicate logger name";
-  case errc::registry_full:
-    return "logger registry full";
-  case errc::logger_not_found:
-    return "logger not found";
-  case errc::default_logger_not_set:
-    return "default logger not set";
-  case errc::invalid_sink:
-    return "invalid sink";
-  case errc::sink_list_full:
-    return "sink list full";
-  case errc::sink_write_failed:
-    return "sink write failed";
-  case errc::message_too_long:
-    return "message too long";
-  default:
-    return "unknown error";
-  }
-}
-
 // 可裁剪的容量上限（都能用 -D 覆盖）
 //   ELOG_MAX_LOGGERS：注册表里的 logger 槽位数，每个约占 64 B 静态 RAM
 //   ELOG_MAX_RECORD_SIZE：单条日志（时间戳/位置前缀 + 消息）的栈缓冲
@@ -111,7 +69,7 @@ struct config {
   static constexpr std::size_t max_loggers = ELOG_MAX_LOGGERS;
   static constexpr std::size_t max_logger_name = 31;
   static constexpr std::size_t max_sinks_per_logger = 4;
-  // 消息不再单独占一块缓冲（见 logger::try_log_at），保留名字仅为兼容旧代码
+  // 消息在 log_at 里与整条记录共享同一块缓冲，保留名字仅为兼容旧代码
   static constexpr std::size_t max_payload_size = ELOG_MAX_RECORD_SIZE;
   static constexpr std::size_t max_record_size = ELOG_MAX_RECORD_SIZE;
 };
@@ -135,21 +93,18 @@ public:
     return write_fn_ != nullptr || efmt_fn_ != nullptr;
   }
 
-  [[nodiscard]] void_result write(const char *data, std::size_t size) const {
+  // 返回 false 表示写失败；日志调用路径不查看它（放不下的整行本来就丢弃）
+  [[nodiscard]] bool write(const char *data, std::size_t size) const {
     if (write_fn_ != nullptr) {
-      if (!write_fn_(data, size, user_data_)) {
-        return make_unexpected(errc::sink_write_failed);
-      }
-
-      return {};
+      return write_fn_(data, size, user_data_);
     }
 
     if (efmt_fn_ != nullptr) {
       efmt_fn_(data, size);
-      return {};
+      return true;
     }
 
-    return make_unexpected(errc::invalid_sink);
+    return false;
   }
 
   static sink from_callback(write_fn fn, void *user_data = nullptr) {
@@ -168,16 +123,14 @@ private:
 
 class multi_sink {
 public:
-  [[nodiscard]] void_result add_sink(const sink& value) {
-    if (!value.is_valid()) {
-      return make_unexpected(errc::invalid_sink);
-    }
-    if (count_ >= sinks_.size()) {
-      return make_unexpected(errc::sink_list_full);
+  // 返回 false：sink 无效或槽位已满
+  [[nodiscard]] bool add_sink(const sink& value) {
+    if (!value.is_valid() || count_ >= sinks_.size()) {
+      return false;
     }
 
     sinks_[count_++] = value;
-    return {};
+    return true;
   }
 
   [[nodiscard]] sink output_sink() {
@@ -196,7 +149,7 @@ private:
 
     bool all_succeeded = true;
     for (std::size_t index = 0; index < self->count_; ++index) {
-      if (!self->sinks_[index].write(data, size).has_value()) {
+      if (!self->sinks_[index].write(data, size)) {
         all_succeeded = false;
       }
     }
@@ -222,98 +175,61 @@ public:
     return value >= level_ && level_ != level::off;
   }
 
-  // 参数一律按 const 引用转发：日志调用不该复制实参（字符串/自定义类型尤其明显）
+  // 单遍直写：前缀先写进记录缓冲，消息紧接着写在它后面，一遍就完。
+  // 参数一律按 const 引用转发：日志调用不该复制实参（字符串/自定义类型尤其明显）。
+  // 放不下的一行整体丢弃（不输出半行）。
   template <typename... Args>
-  void_result try_log(level value, const char *fmt, const Args &...args) const {
-    return try_log_at(value, source_location{}, fmt, args...);
+  void log(level value, const char *fmt, const Args &...args) const {
+    log_at(value, source_location{}, fmt, args...);
   }
 
   template <typename... Args>
-  void_result try_log_at(level value, const source_location &location,
-                         const char *fmt, const Args &...args) const {
+  void log_at(level value, const source_location &location,
+              const char *fmt, const Args &...args) const {
     if (!should_log(value)) {
-      return {};
+      return;
     }
 
     if (!sink_.is_valid()) {
-      return make_unexpected(errc::invalid_sink);
+      return;
     }
 
-    // 单遍直写：前缀先写进记录缓冲，消息紧接着写在它后面。
-    // 旧实现先把消息格式化到 payload[257]，再格式化一遍整条记录（把 payload 当
-    // 参数再抄一次），每次日志要做两遍完整格式化、还多占 257 B 栈。
-    // 这里两块都不需要：record 只需要一块缓冲，两块字段顺序写入。
     char record[config::max_record_size + 1U];
 
     const std::size_t prefix_size = e_fmt::format_to(
         record, sizeof(record), "[{}] [{}:{} {}] ", to_string(value),
         basename(location.file), location.line, location.function);
     if (prefix_size >= sizeof(record)) {
-      return make_unexpected(errc::message_too_long);
+      return;
     }
 
-    // format_to 返回完整输出所需长度（snprintf 语义）：放不下就是消息太长
+    // format_to 返回完整输出所需长度（snprintf 语义）：放不下就是消息太长 → 整行丢弃
     const std::size_t body_size = e_fmt::format_to(
         record + prefix_size, sizeof(record) - prefix_size, fmt, args...);
     if (body_size >= sizeof(record) - prefix_size) {
-      return make_unexpected(errc::message_too_long);
+      return;
     }
 
-    auto write_result = write_with_style(value, record, prefix_size + body_size);
-    if (!write_result.has_value()) {
-      return write_result;
-    }
-
+    write_with_style(value, record, prefix_size + body_size);
     static constexpr char newline = '\n';
-    return sink_.write(&newline, 1U);
+    (void)sink_.write(&newline, 1U);
   }
-
-  template <typename... Args>
-  void log(level value, const char *fmt, Args... args) const {
-    (void)try_log(value, fmt, args...);
-  }
-
-  template <typename... Args>
-  void log_at(level value, const source_location& location, const char *fmt,
-              Args... args) const {
-    (void)try_log_at(value, location, fmt, args...);
-  }
-
-  template <typename... Args> void_result try_trace(const char *fmt, Args... args) const {
-    return try_log(level::trace, fmt, args...);
-  }
-  template <typename... Args> void_result try_debug(const char *fmt, Args... args) const {
-    return try_log(level::debug, fmt, args...);
-  }
-  template <typename... Args> void_result try_info(const char *fmt, Args... args) const {
-    return try_log(level::info, fmt, args...);
-  }
-  template <typename... Args> void_result try_warn(const char *fmt, Args... args) const {
-    return try_log(level::warn, fmt, args...);
-  }
-  template <typename... Args> void_result try_error(const char *fmt, Args... args) const {
-    return try_log(level::error, fmt, args...);
-  }
-  template <typename... Args> void_result try_critical(const char *fmt, Args... args) const {
-    return try_log(level::critical, fmt, args...);
-  }
-
-  template <typename... Args> void trace(const char *fmt, Args... args) const {
+  template <typename... Args> void trace(const char *fmt, const Args &...args) const {
     log(level::trace, fmt, args...);
   }
-  template <typename... Args> void debug(const char *fmt, Args... args) const {
+  template <typename... Args> void debug(const char *fmt, const Args &...args) const {
     log(level::debug, fmt, args...);
   }
-  template <typename... Args> void info(const char *fmt, Args... args) const {
+  template <typename... Args> void info(const char *fmt, const Args &...args) const {
     log(level::info, fmt, args...);
   }
-  template <typename... Args> void warn(const char *fmt, Args... args) const {
+  template <typename... Args> void warn(const char *fmt, const Args &...args) const {
     log(level::warn, fmt, args...);
   }
-  template <typename... Args> void error(const char *fmt, Args... args) const {
+  template <typename... Args> void error(const char *fmt, const Args &...args) const {
     log(level::error, fmt, args...);
   }
-  template <typename... Args> void critical(const char *fmt, Args... args) const {
+  template <typename... Args> void critical(const char *fmt, const Args &...args) const {
     log(level::critical, fmt, args...);
   }
 
@@ -364,35 +280,24 @@ private:
 #endif
   }
 
-  void_result write_with_style(level value, const char* data,
-                               std::size_t size) const {
+  void write_with_style(level value, const char* data,
+                        std::size_t size) const {
     const auto style = style_for_level(value);
     if (!style.is_empty()) {
       char style_buffer[64];
       const auto style_size =
           e_fmt::detail::style_builder::build(style, style_buffer, sizeof(style_buffer));
       if (style_size > 0U) {
-        auto style_result = sink_.write(style_buffer, style_size);
-        if (!style_result.has_value()) {
-          return style_result;
-        }
+        (void)sink_.write(style_buffer, style_size);
       }
     }
 
-    auto write_result = sink_.write(data, size);
-    if (!write_result.has_value()) {
-      return write_result;
-    }
+    (void)sink_.write(data, size);
 
     if (!style.is_empty()) {
-      auto reset_result = sink_.write(e_fmt::detail::style_builder::reset(),
-                                      e_fmt::detail::style_builder::reset_length());
-      if (!reset_result.has_value()) {
-        return reset_result;
-      }
+      (void)sink_.write(e_fmt::detail::style_builder::reset(),
+                        e_fmt::detail::style_builder::reset_length());
     }
-
-    return {};
   }
 
   void reset() {
@@ -419,19 +324,11 @@ public:
     return storage;
   }
 
-  result<logger *> create(const char *name, const sink &sink_value,
-                          level initial_level = level::info) {
-    auto validation = validate_name(name);
-    if (!validation.has_value()) {
-      return make_unexpected(validation.error());
-    }
-
-    if (!sink_value.is_valid()) {
-      return make_unexpected(errc::invalid_sink);
-    }
-
-    if (find_index(name) >= 0) {
-      return make_unexpected(errc::duplicate_logger_name);
+  // 失败返回 nullptr：名字非法 / sink 无效 / 重名 / 注册表满
+  logger *create(const char *name, const sink &sink_value,
+                 level initial_level = level::info) {
+    if (!validate_name(name) || !sink_value.is_valid() || find_index(name) >= 0) {
+      return nullptr;
     }
 
     for (std::size_t index = 0; index < config::max_loggers; ++index) {
@@ -450,72 +347,66 @@ public:
       }
     }
 
-    return make_unexpected(errc::registry_full);
+    return nullptr;
   }
 
-  result<logger *> get(const char *name) {
+  logger *get(const char *name) {
     const auto index = find_index(name);
     if (index < 0) {
-      return make_unexpected(errc::logger_not_found);
+      return nullptr;
     }
     return &loggers_[static_cast<std::size_t>(index)];
   }
 
-  result<const logger *> get(const char *name) const {
+  const logger *get(const char *name) const {
     const auto index = find_index(name);
     if (index < 0) {
-      return make_unexpected(errc::logger_not_found);
+      return nullptr;
     }
     return &loggers_[static_cast<std::size_t>(index)];
   }
 
-  void_result set_default(const char *name) {
+  bool set_default(const char *name) {
     const auto index = find_index(name);
     if (index < 0) {
-      return make_unexpected(errc::logger_not_found);
+      return false;
     }
 
     default_index_ = index;
-    return {};
+    return true;
   }
 
-  void_result set_default(logger &value) {
+  bool set_default(logger &value) {
     const auto index = find_index(value.name());
     if (index < 0) {
-      return make_unexpected(errc::logger_not_found);
+      return false;
     }
 
     default_index_ = index;
-    return {};
+    return true;
   }
 
-  result<logger *> default_logger() {
+  // 未设置时返回 nullptr
+  logger *default_logger() {
     if (default_index_ < 0) {
-      return make_unexpected(errc::default_logger_not_set);
+      return nullptr;
     }
 
     return &loggers_[static_cast<std::size_t>(default_index_)];
   }
 
-  result<const logger *> default_logger() const {
+  const logger *default_logger() const {
     if (default_index_ < 0) {
-      return make_unexpected(errc::default_logger_not_set);
+      return nullptr;
     }
 
     return &loggers_[static_cast<std::size_t>(default_index_)];
   }
 
 private:
-  static void_result validate_name(const char *name) {
-    if (name == nullptr || name[0] == '\0') {
-      return make_unexpected(errc::invalid_name);
-    }
-
-    if (std::strlen(name) > config::max_logger_name) {
-      return make_unexpected(errc::name_too_long);
-    }
-
-    return {};
+  static bool validate_name(const char *name) {
+    return name != nullptr && name[0] != '\0' &&
+           std::strlen(name) <= config::max_logger_name;
   }
 
   int find_index(const char *name) const {
@@ -540,93 +431,58 @@ private:
   int default_index_ = -1;
 };
 
-inline result<logger *> create_logger(const char *name, const sink &sink_value,
-                                      level initial_level = level::info) {
+// 失败返回 nullptr；bool 版本返回是否成功
+inline logger *create_logger(const char *name, const sink &sink_value,
+                             level initial_level = level::info) {
   return registry::instance().create(name, sink_value, initial_level);
 }
 
-inline result<logger *> get(const char *name) {
+inline logger *get(const char *name) {
   return registry::instance().get(name);
 }
 
-inline void_result set_default_logger(const char *name) {
+inline bool set_default_logger(const char *name) {
   return registry::instance().set_default(name);
 }
 
-inline void_result set_default_logger(logger &value) {
+inline bool set_default_logger(logger &value) {
   return registry::instance().set_default(value);
 }
 
-inline result<logger *> default_logger() {
+inline logger *default_logger() {
   return registry::instance().default_logger();
 }
 
-template <typename... Args>
-void_result try_log(level value, const char *fmt, Args... args) {
-  auto logger_result = default_logger();
-  if (!logger_result.has_value()) {
-    return make_unexpected(logger_result.error());
+template <typename... Args> void log(level value, const char *fmt, const Args &...args) {
+  if (logger *target = default_logger()) {
+    target->log(value, fmt, args...);
   }
-
-  return logger_result.value()->try_log(value, fmt, args...);
-}
-
-template <typename... Args>
-void_result try_log_at(level value, const source_location& location,
-                       const char *fmt, Args... args) {
-  auto logger_result = default_logger();
-  if (!logger_result.has_value()) {
-    return make_unexpected(logger_result.error());
-  }
-
-  return logger_result.value()->try_log_at(value, location, fmt, args...);
-}
-
-template <typename... Args> void log(level value, const char *fmt, Args... args) {
-  (void)try_log(value, fmt, args...);
 }
 
 template <typename... Args>
 void log_at(level value, const source_location& location, const char *fmt,
-            Args... args) {
-  (void)try_log_at(value, location, fmt, args...);
+            const Args &...args) {
+  if (logger *target = default_logger()) {
+    target->log_at(value, location, fmt, args...);
+  }
 }
 
-template <typename... Args> void_result try_trace(const char *fmt, Args... args) {
-  return try_log(level::trace, fmt, args...);
-}
-template <typename... Args> void_result try_debug(const char *fmt, Args... args) {
-  return try_log(level::debug, fmt, args...);
-}
-template <typename... Args> void_result try_info(const char *fmt, Args... args) {
-  return try_log(level::info, fmt, args...);
-}
-template <typename... Args> void_result try_warn(const char *fmt, Args... args) {
-  return try_log(level::warn, fmt, args...);
-}
-template <typename... Args> void_result try_error(const char *fmt, Args... args) {
-  return try_log(level::error, fmt, args...);
-}
-template <typename... Args> void_result try_critical(const char *fmt, Args... args) {
-  return try_log(level::critical, fmt, args...);
-}
-
-template <typename... Args> void trace(const char *fmt, Args... args) {
+template <typename... Args> void trace(const char *fmt, const Args &...args) {
   log(level::trace, fmt, args...);
 }
-template <typename... Args> void debug(const char *fmt, Args... args) {
+template <typename... Args> void debug(const char *fmt, const Args &...args) {
   log(level::debug, fmt, args...);
 }
-template <typename... Args> void info(const char *fmt, Args... args) {
+template <typename... Args> void info(const char *fmt, const Args &...args) {
   log(level::info, fmt, args...);
 }
-template <typename... Args> void warn(const char *fmt, Args... args) {
+template <typename... Args> void warn(const char *fmt, const Args &...args) {
   log(level::warn, fmt, args...);
 }
-template <typename... Args> void error(const char *fmt, Args... args) {
+template <typename... Args> void error(const char *fmt, const Args &...args) {
   log(level::error, fmt, args...);
 }
-template <typename... Args> void critical(const char *fmt, Args... args) {
+template <typename... Args> void critical(const char *fmt, const Args &...args) {
   log(level::critical, fmt, args...);
 }
 
@@ -640,10 +496,7 @@ inline bool stdout_sink_write(const char *data, std::size_t size, void *) {
 #if EFMT_ENABLE_STDIO
   e_fmt::stdout_output_handler(data, size);
 #else
-  auto sink_result = e_log::sink::from_efmt_output(e_fmt::get_output_handler()).write(data, size);
-  if (!sink_result.has_value()) {
-    return false;
-  }
+  return e_log::sink::from_efmt_output(e_fmt::get_output_handler()).write(data, size);
 #endif
   return true;
 }
@@ -667,5 +520,102 @@ inline sink stdout_sink() { return make_sink(&stdout_sink_write); }
 #define ELOG_LOGGER_WARN(logger, ...) (logger).log_at(::e_log::level::warn, ELOG_SOURCE_LOCATION, __VA_ARGS__)
 #define ELOG_LOGGER_ERROR(logger, ...) (logger).log_at(::e_log::level::error, ELOG_SOURCE_LOCATION, __VA_ARGS__)
 #define ELOG_LOGGER_CRITICAL(logger, ...) (logger).log_at(::e_log::level::critical, ELOG_SOURCE_LOCATION, __VA_ARGS__)
+
+// ============================================================================
+// ETL 类型支持（elog 层适配，efmt 核心零改动）
+// ============================================================================
+// elog 本身依赖 ETL（etl::array 是内部实现），这里顺带把 ETL 常用类型接进
+// efmt 的格式化体系：
+//   * etl::string<N> / etl::istring / etl::string_view -> 文本输出（宽度/
+//     精度/对齐等格式规范照常生效）
+//   * etl::optional<T>        -> 有值打值，空打 nullopt
+//   * etl::pair<T1,T2>        -> 打 (a: b)，与 efmt 的 std::pair 风格一致
+//   * etl::variant<Ts...>     -> 打当前活跃值（C++17，etl::visit）
+//   * 容器（vector/map/list/deque/set/span/...）无需特化：efmt 的通用迭代器
+//     通道自动覆盖，开关见文件顶部的 EFMT_ENABLE_CONTAINER_FORMAT。
+// 实现说明：这里只能写 formatter 偏特化，不能追加 make_format_arg 重载——
+// make_format_arg 的调用发生在 efmt 模板（pack_format_args）内部，两阶段查找
+// 在模板定义点锁定了重载集，elog 层追加的重载永远不会被看见；而 formatter
+// 偏特化在用户实例化点可见，能正常接管。
+#include <middleware/etl/string.h>
+#include <middleware/etl/string_view.h>
+#include <middleware/etl/optional.h>
+#include <middleware/etl/utility.h>
+#include <middleware/etl/variant.h>
+
+#include <type_traits>
+
+namespace e_fmt::detail {
+
+template <std::size_t N>
+struct formatter<etl::string<N>> {
+  static void format(format_context &ctx, const format_specs &specs,
+                     const etl::string<N> &value) {
+    string_formatter::format(ctx, specs,
+                             std::string_view(value.data(), value.size()));
+  }
+};
+
+template <>
+struct formatter<etl::istring> {
+  static void format(format_context &ctx, const format_specs &specs,
+                     const etl::istring &value) {
+    string_formatter::format(ctx, specs,
+                             std::string_view(value.data(), value.size()));
+  }
+};
+
+template <>
+struct formatter<etl::string_view> {
+  static void format(format_context &ctx, const format_specs &specs,
+                     const etl::string_view &value) {
+    string_formatter::format(ctx, specs,
+                             std::string_view(value.data(), value.size()));
+  }
+};
+
+template <typename T>
+struct formatter<etl::optional<T>> {
+  static void format(format_context &ctx, const format_specs &specs,
+                     const etl::optional<T> &value) {
+    if (value.has_value()) {
+      format_specs default_specs;
+      formatter<T>::format(ctx, default_specs, value.value());
+    } else {
+      ctx.write_aligned("nullopt", specs);
+    }
+  }
+};
+
+template <typename T1, typename T2>
+struct formatter<etl::pair<T1, T2>> {
+  static void format(format_context &ctx, const format_specs &,
+                     const etl::pair<T1, T2> &value) {
+    ctx.write_char('(');
+    format_specs default_specs;
+    formatter<T1>::format(ctx, default_specs, value.first);
+    ctx.write_str(": ");
+    formatter<T2>::format(ctx, default_specs, value.second);
+    ctx.write_char(')');
+  }
+};
+
+#if ETL_USING_CPP17
+template <typename... Types>
+struct formatter<etl::variant<Types...>> {
+  static void format(format_context &ctx, const format_specs &,
+                     const etl::variant<Types...> &value) {
+    format_specs default_specs;
+    etl::visit(
+        [&](const auto &item) {
+          formatter<std::decay_t<decltype(item)>>::format(ctx, default_specs,
+                                                          item);
+        },
+        value);
+  }
+};
+#endif
+
+} // namespace e_fmt::detail
 
 #endif // ELOG_HPP

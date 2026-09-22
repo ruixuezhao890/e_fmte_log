@@ -29,7 +29,7 @@ namespace e_fmt::detail {
 // 为什么需要它
 // ============================================================================
 // 旧写法要把"成员类型 + 成员名 + 显示名"抄三遍：
-//     E_FMT_FORMATTER_2(Point, int, x, "x", int, y, "y");
+//     （老写法 E_FMT_FORMATTER_2 已删除；需要"只列字段名"时用 E_FMT_FORMATTER_FIELDS）
 // 抄错任何一处都是编译错误（类型）或输出错（字符串）。
 // 这里把三处压到一处：
 //     E_FMT_FORMATTER_FIELDS(Point, x, y);   // 类型由 &Point::x 推导，显示名由 #x 生成
@@ -368,9 +368,8 @@ private:
   using list_type = ::e_fmt::detail::member_descriptor_list< \
         ::e_fmt::detail::field_descriptor<&Type::m1>>; \
   const list_type list(::e_fmt::detail::field_descriptor<&Type::m1>(#m1)); \
-  ctx.write_char('{'); \
-  list.format_members(ctx, value, std::make_index_sequence<1>{}); \
-  ctx.write_char('}'); \
+  list.format_full(ctx, value, std::make_index_sequence<1>{}, \
+                   ::e_fmt::detail::make_descriptor_style(specs)); \
   }
 
 #define EFMT_DETAIL_FIELDS_2(Type, m1, m2) \
@@ -383,9 +382,8 @@ private:
         ::e_fmt::detail::field_descriptor<&Type::m2>>; \
   const list_type list(::e_fmt::detail::field_descriptor<&Type::m1>(#m1), \
                        ::e_fmt::detail::field_descriptor<&Type::m2>(#m2)); \
-  ctx.write_char('{'); \
-  list.format_members(ctx, value, std::make_index_sequence<2>{}); \
-  ctx.write_char('}'); \
+  list.format_full(ctx, value, std::make_index_sequence<2>{}, \
+                   ::e_fmt::detail::make_descriptor_style(specs)); \
   }
 
 #define EFMT_DETAIL_FIELDS_3(Type, m1, m2, m3) \
@@ -400,9 +398,8 @@ private:
   const list_type list(::e_fmt::detail::field_descriptor<&Type::m1>(#m1), \
                        ::e_fmt::detail::field_descriptor<&Type::m2>(#m2), \
                        ::e_fmt::detail::field_descriptor<&Type::m3>(#m3)); \
-  ctx.write_char('{'); \
-  list.format_members(ctx, value, std::make_index_sequence<3>{}); \
-  ctx.write_char('}'); \
+  list.format_full(ctx, value, std::make_index_sequence<3>{}, \
+                   ::e_fmt::detail::make_descriptor_style(specs)); \
   }
 
 #define EFMT_DETAIL_FIELDS_4(Type, m1, m2, m3, m4) \
@@ -419,9 +416,8 @@ private:
                        ::e_fmt::detail::field_descriptor<&Type::m2>(#m2), \
                        ::e_fmt::detail::field_descriptor<&Type::m3>(#m3), \
                        ::e_fmt::detail::field_descriptor<&Type::m4>(#m4)); \
-  ctx.write_char('{'); \
-  list.format_members(ctx, value, std::make_index_sequence<4>{}); \
-  ctx.write_char('}'); \
+  list.format_full(ctx, value, std::make_index_sequence<4>{}, \
+                   ::e_fmt::detail::make_descriptor_style(specs)); \
   }
 
 #define EFMT_DETAIL_FIELDS_5(Type, m1, m2, m3, m4, m5) \
@@ -440,9 +436,8 @@ private:
                        ::e_fmt::detail::field_descriptor<&Type::m3>(#m3), \
                        ::e_fmt::detail::field_descriptor<&Type::m4>(#m4), \
                        ::e_fmt::detail::field_descriptor<&Type::m5>(#m5)); \
-  ctx.write_char('{'); \
-  list.format_members(ctx, value, std::make_index_sequence<5>{}); \
-  ctx.write_char('}'); \
+  list.format_full(ctx, value, std::make_index_sequence<5>{}, \
+                   ::e_fmt::detail::make_descriptor_style(specs)); \
   }
 
 #define EFMT_DETAIL_FIELDS_6(Type, m1, m2, m3, m4, m5, m6) \
@@ -463,9 +458,8 @@ private:
                        ::e_fmt::detail::field_descriptor<&Type::m4>(#m4), \
                        ::e_fmt::detail::field_descriptor<&Type::m5>(#m5), \
                        ::e_fmt::detail::field_descriptor<&Type::m6>(#m6)); \
-  ctx.write_char('{'); \
-  list.format_members(ctx, value, std::make_index_sequence<6>{}); \
-  ctx.write_char('}'); \
+  list.format_full(ctx, value, std::make_index_sequence<6>{}, \
+                   ::e_fmt::detail::make_descriptor_style(specs)); \
   }
 
 #define EFMT_DETAIL_FIELDS_7(Type, m1, m2, m3, m4, m5, m6, m7) \
@@ -488,9 +482,8 @@ private:
                        ::e_fmt::detail::field_descriptor<&Type::m5>(#m5), \
                        ::e_fmt::detail::field_descriptor<&Type::m6>(#m6), \
                        ::e_fmt::detail::field_descriptor<&Type::m7>(#m7)); \
-  ctx.write_char('{'); \
-  list.format_members(ctx, value, std::make_index_sequence<7>{}); \
-  ctx.write_char('}'); \
+  list.format_full(ctx, value, std::make_index_sequence<7>{}, \
+                   ::e_fmt::detail::make_descriptor_style(specs)); \
   }
 
 #define EFMT_DETAIL_FIELDS_8(Type, m1, m2, m3, m4, m5, m6, m7, m8) \
@@ -515,9 +508,8 @@ private:
                        ::e_fmt::detail::field_descriptor<&Type::m6>(#m6), \
                        ::e_fmt::detail::field_descriptor<&Type::m7>(#m7), \
                        ::e_fmt::detail::field_descriptor<&Type::m8>(#m8)); \
-  ctx.write_char('{'); \
-  list.format_members(ctx, value, std::make_index_sequence<8>{}); \
-  ctx.write_char('}'); \
+  list.format_full(ctx, value, std::make_index_sequence<8>{}, \
+                   ::e_fmt::detail::make_descriptor_style(specs)); \
   }
 
 #define EFMT_DETAIL_FIELDS_9(Type, m1, m2, m3, m4, m5, m6, m7, m8, m9) \
@@ -544,9 +536,8 @@ private:
                        ::e_fmt::detail::field_descriptor<&Type::m7>(#m7), \
                        ::e_fmt::detail::field_descriptor<&Type::m8>(#m8), \
                        ::e_fmt::detail::field_descriptor<&Type::m9>(#m9)); \
-  ctx.write_char('{'); \
-  list.format_members(ctx, value, std::make_index_sequence<9>{}); \
-  ctx.write_char('}'); \
+  list.format_full(ctx, value, std::make_index_sequence<9>{}, \
+                   ::e_fmt::detail::make_descriptor_style(specs)); \
   }
 
 #define EFMT_DETAIL_FIELDS_10(Type, m1, m2, m3, m4, m5, m6, m7, m8, m9, m10) \
@@ -575,9 +566,8 @@ private:
                        ::e_fmt::detail::field_descriptor<&Type::m8>(#m8), \
                        ::e_fmt::detail::field_descriptor<&Type::m9>(#m9), \
                        ::e_fmt::detail::field_descriptor<&Type::m10>(#m10)); \
-  ctx.write_char('{'); \
-  list.format_members(ctx, value, std::make_index_sequence<10>{}); \
-  ctx.write_char('}'); \
+  list.format_full(ctx, value, std::make_index_sequence<10>{}, \
+                   ::e_fmt::detail::make_descriptor_style(specs)); \
   }
 
 #define EFMT_DETAIL_FIELDS_11(Type, m1, m2, m3, m4, m5, m6, m7, m8, m9, m10, m11) \
@@ -608,9 +598,8 @@ private:
                        ::e_fmt::detail::field_descriptor<&Type::m9>(#m9), \
                        ::e_fmt::detail::field_descriptor<&Type::m10>(#m10), \
                        ::e_fmt::detail::field_descriptor<&Type::m11>(#m11)); \
-  ctx.write_char('{'); \
-  list.format_members(ctx, value, std::make_index_sequence<11>{}); \
-  ctx.write_char('}'); \
+  list.format_full(ctx, value, std::make_index_sequence<11>{}, \
+                   ::e_fmt::detail::make_descriptor_style(specs)); \
   }
 
 #define EFMT_DETAIL_FIELDS_12(Type, m1, m2, m3, m4, m5, m6, m7, m8, m9, m10, m11, m12) \
@@ -643,9 +632,8 @@ private:
                        ::e_fmt::detail::field_descriptor<&Type::m10>(#m10), \
                        ::e_fmt::detail::field_descriptor<&Type::m11>(#m11), \
                        ::e_fmt::detail::field_descriptor<&Type::m12>(#m12)); \
-  ctx.write_char('{'); \
-  list.format_members(ctx, value, std::make_index_sequence<12>{}); \
-  ctx.write_char('}'); \
+  list.format_full(ctx, value, std::make_index_sequence<12>{}, \
+                   ::e_fmt::detail::make_descriptor_style(specs)); \
   }
 
 #define EFMT_DETAIL_ENUM_1(Type, v1) \
@@ -1131,13 +1119,22 @@ constexpr bool has_word(std::string_view s, std::string_view w) {
   return false;
 }
 
-// 声明符里的字段名：最后一个标识符，遇到 [ = : 停
+// 声明符里的字段名：最后一个标识符，遇到 [ = 停。
+// 单个 ':' 是位域（int flags : 3）要停；"::" 是限定名的一部分
+// （std::string label 的字段名是 label，不是 std），必须跳过继续读。
 constexpr std::string_view declarator_name(std::string_view frag) {
   std::string_view last{};
   std::size_t i = 0;
   while (i < frag.size()) {
     const char c = frag[i];
-    if (c == '[' || c == '=' || c == ':') break;
+    if (c == '[' || c == '=') break;
+    if (c == ':') {
+      if (i + 1 < frag.size() && frag[i + 1] == ':') {
+        i += 2;
+        continue;
+      }
+      break;
+    }
     if (is_alpha(c)) {
       const std::size_t b = i;
       while (i < frag.size() && is_ident(frag[i])) ++i;
@@ -1317,23 +1314,25 @@ void derive_write_value(format_context &ctx, const T &value) {
 // 名字 + " = " + 值；names == nullptr 表示位置式（内层没声明格式化器的聚合体）
 template <typename T>
 void write_field(format_context &ctx, const derived_names *names, std::size_t index,
-                 const T &value) {
+                 const T &value, const derive_style &style) {
   if (index != 0) {
-    ctx.write_str(", ");
+    ctx.write_str(style.sep);
   }
   if (names != nullptr) {
     ctx.write_str(names->items[index]);
-    ctx.write_str(" = ");
+    ctx.write_str(style.name_sep);
   }
   derive_write_value(ctx, value);
 }
 
-inline void open_bracket(format_context &ctx, const derived_names *names) {
-  ctx.write_str(names != nullptr ? "{ " : "(");
+inline void open_bracket(format_context &ctx, const derived_names *names,
+                            const derive_style &style) {
+  ctx.write_str(names != nullptr ? style.open : "(");
 }
 
-inline void close_bracket(format_context &ctx, const derived_names *names) {
-  ctx.write_str(names != nullptr ? " }" : ")");
+inline void close_bracket(format_context &ctx, const derived_names *names,
+                             const derive_style &style) {
+  ctx.write_str(names != nullptr ? style.close : ")");
 }
 
 // 按字段数特化的打印器：每个绑定直接交给格式化器（不经过 std::tie）
@@ -1341,281 +1340,297 @@ template <std::size_t N> struct derived_printer;
 
 template <> struct derived_printer<1> {
   template <typename T>
-  static void run(const T &value, format_context &ctx, const derived_names *names) {
+  static void run(const T &value, format_context &ctx, const derived_names *names,
+                             const derive_style &style) {
     const auto &[m0] = value;
-    open_bracket(ctx, names);
-    write_field(ctx, names, 0, m0);
-    close_bracket(ctx, names);
+    open_bracket(ctx, names, style);
+    write_field(ctx, names, 0, m0, style);
+    close_bracket(ctx, names, style);
   }
 };
 
 template <> struct derived_printer<2> {
   template <typename T>
-  static void run(const T &value, format_context &ctx, const derived_names *names) {
+  static void run(const T &value, format_context &ctx, const derived_names *names,
+                             const derive_style &style) {
     const auto &[m0, m1] = value;
-    open_bracket(ctx, names);
-    write_field(ctx, names, 0, m0);
-    write_field(ctx, names, 1, m1);
-    close_bracket(ctx, names);
+    open_bracket(ctx, names, style);
+    write_field(ctx, names, 0, m0, style);
+    write_field(ctx, names, 1, m1, style);
+    close_bracket(ctx, names, style);
   }
 };
 
 template <> struct derived_printer<3> {
   template <typename T>
-  static void run(const T &value, format_context &ctx, const derived_names *names) {
+  static void run(const T &value, format_context &ctx, const derived_names *names,
+                             const derive_style &style) {
     const auto &[m0, m1, m2] = value;
-    open_bracket(ctx, names);
-    write_field(ctx, names, 0, m0);
-    write_field(ctx, names, 1, m1);
-    write_field(ctx, names, 2, m2);
-    close_bracket(ctx, names);
+    open_bracket(ctx, names, style);
+    write_field(ctx, names, 0, m0, style);
+    write_field(ctx, names, 1, m1, style);
+    write_field(ctx, names, 2, m2, style);
+    close_bracket(ctx, names, style);
   }
 };
 
 template <> struct derived_printer<4> {
   template <typename T>
-  static void run(const T &value, format_context &ctx, const derived_names *names) {
+  static void run(const T &value, format_context &ctx, const derived_names *names,
+                             const derive_style &style) {
     const auto &[m0, m1, m2, m3] = value;
-    open_bracket(ctx, names);
-    write_field(ctx, names, 0, m0);
-    write_field(ctx, names, 1, m1);
-    write_field(ctx, names, 2, m2);
-    write_field(ctx, names, 3, m3);
-    close_bracket(ctx, names);
+    open_bracket(ctx, names, style);
+    write_field(ctx, names, 0, m0, style);
+    write_field(ctx, names, 1, m1, style);
+    write_field(ctx, names, 2, m2, style);
+    write_field(ctx, names, 3, m3, style);
+    close_bracket(ctx, names, style);
   }
 };
 
 template <> struct derived_printer<5> {
   template <typename T>
-  static void run(const T &value, format_context &ctx, const derived_names *names) {
+  static void run(const T &value, format_context &ctx, const derived_names *names,
+                             const derive_style &style) {
     const auto &[m0, m1, m2, m3, m4] = value;
-    open_bracket(ctx, names);
-    write_field(ctx, names, 0, m0);
-    write_field(ctx, names, 1, m1);
-    write_field(ctx, names, 2, m2);
-    write_field(ctx, names, 3, m3);
-    write_field(ctx, names, 4, m4);
-    close_bracket(ctx, names);
+    open_bracket(ctx, names, style);
+    write_field(ctx, names, 0, m0, style);
+    write_field(ctx, names, 1, m1, style);
+    write_field(ctx, names, 2, m2, style);
+    write_field(ctx, names, 3, m3, style);
+    write_field(ctx, names, 4, m4, style);
+    close_bracket(ctx, names, style);
   }
 };
 
 template <> struct derived_printer<6> {
   template <typename T>
-  static void run(const T &value, format_context &ctx, const derived_names *names) {
+  static void run(const T &value, format_context &ctx, const derived_names *names,
+                             const derive_style &style) {
     const auto &[m0, m1, m2, m3, m4, m5] = value;
-    open_bracket(ctx, names);
-    write_field(ctx, names, 0, m0);
-    write_field(ctx, names, 1, m1);
-    write_field(ctx, names, 2, m2);
-    write_field(ctx, names, 3, m3);
-    write_field(ctx, names, 4, m4);
-    write_field(ctx, names, 5, m5);
-    close_bracket(ctx, names);
+    open_bracket(ctx, names, style);
+    write_field(ctx, names, 0, m0, style);
+    write_field(ctx, names, 1, m1, style);
+    write_field(ctx, names, 2, m2, style);
+    write_field(ctx, names, 3, m3, style);
+    write_field(ctx, names, 4, m4, style);
+    write_field(ctx, names, 5, m5, style);
+    close_bracket(ctx, names, style);
   }
 };
 
 template <> struct derived_printer<7> {
   template <typename T>
-  static void run(const T &value, format_context &ctx, const derived_names *names) {
+  static void run(const T &value, format_context &ctx, const derived_names *names,
+                             const derive_style &style) {
     const auto &[m0, m1, m2, m3, m4, m5, m6] = value;
-    open_bracket(ctx, names);
-    write_field(ctx, names, 0, m0);
-    write_field(ctx, names, 1, m1);
-    write_field(ctx, names, 2, m2);
-    write_field(ctx, names, 3, m3);
-    write_field(ctx, names, 4, m4);
-    write_field(ctx, names, 5, m5);
-    write_field(ctx, names, 6, m6);
-    close_bracket(ctx, names);
+    open_bracket(ctx, names, style);
+    write_field(ctx, names, 0, m0, style);
+    write_field(ctx, names, 1, m1, style);
+    write_field(ctx, names, 2, m2, style);
+    write_field(ctx, names, 3, m3, style);
+    write_field(ctx, names, 4, m4, style);
+    write_field(ctx, names, 5, m5, style);
+    write_field(ctx, names, 6, m6, style);
+    close_bracket(ctx, names, style);
   }
 };
 
 template <> struct derived_printer<8> {
   template <typename T>
-  static void run(const T &value, format_context &ctx, const derived_names *names) {
+  static void run(const T &value, format_context &ctx, const derived_names *names,
+                             const derive_style &style) {
     const auto &[m0, m1, m2, m3, m4, m5, m6, m7] = value;
-    open_bracket(ctx, names);
-    write_field(ctx, names, 0, m0);
-    write_field(ctx, names, 1, m1);
-    write_field(ctx, names, 2, m2);
-    write_field(ctx, names, 3, m3);
-    write_field(ctx, names, 4, m4);
-    write_field(ctx, names, 5, m5);
-    write_field(ctx, names, 6, m6);
-    write_field(ctx, names, 7, m7);
-    close_bracket(ctx, names);
+    open_bracket(ctx, names, style);
+    write_field(ctx, names, 0, m0, style);
+    write_field(ctx, names, 1, m1, style);
+    write_field(ctx, names, 2, m2, style);
+    write_field(ctx, names, 3, m3, style);
+    write_field(ctx, names, 4, m4, style);
+    write_field(ctx, names, 5, m5, style);
+    write_field(ctx, names, 6, m6, style);
+    write_field(ctx, names, 7, m7, style);
+    close_bracket(ctx, names, style);
   }
 };
 
 template <> struct derived_printer<9> {
   template <typename T>
-  static void run(const T &value, format_context &ctx, const derived_names *names) {
+  static void run(const T &value, format_context &ctx, const derived_names *names,
+                             const derive_style &style) {
     const auto &[m0, m1, m2, m3, m4, m5, m6, m7, m8] = value;
-    open_bracket(ctx, names);
-    write_field(ctx, names, 0, m0);
-    write_field(ctx, names, 1, m1);
-    write_field(ctx, names, 2, m2);
-    write_field(ctx, names, 3, m3);
-    write_field(ctx, names, 4, m4);
-    write_field(ctx, names, 5, m5);
-    write_field(ctx, names, 6, m6);
-    write_field(ctx, names, 7, m7);
-    write_field(ctx, names, 8, m8);
-    close_bracket(ctx, names);
+    open_bracket(ctx, names, style);
+    write_field(ctx, names, 0, m0, style);
+    write_field(ctx, names, 1, m1, style);
+    write_field(ctx, names, 2, m2, style);
+    write_field(ctx, names, 3, m3, style);
+    write_field(ctx, names, 4, m4, style);
+    write_field(ctx, names, 5, m5, style);
+    write_field(ctx, names, 6, m6, style);
+    write_field(ctx, names, 7, m7, style);
+    write_field(ctx, names, 8, m8, style);
+    close_bracket(ctx, names, style);
   }
 };
 
 template <> struct derived_printer<10> {
   template <typename T>
-  static void run(const T &value, format_context &ctx, const derived_names *names) {
+  static void run(const T &value, format_context &ctx, const derived_names *names,
+                             const derive_style &style) {
     const auto &[m0, m1, m2, m3, m4, m5, m6, m7, m8, m9] = value;
-    open_bracket(ctx, names);
-    write_field(ctx, names, 0, m0);
-    write_field(ctx, names, 1, m1);
-    write_field(ctx, names, 2, m2);
-    write_field(ctx, names, 3, m3);
-    write_field(ctx, names, 4, m4);
-    write_field(ctx, names, 5, m5);
-    write_field(ctx, names, 6, m6);
-    write_field(ctx, names, 7, m7);
-    write_field(ctx, names, 8, m8);
-    write_field(ctx, names, 9, m9);
-    close_bracket(ctx, names);
+    open_bracket(ctx, names, style);
+    write_field(ctx, names, 0, m0, style);
+    write_field(ctx, names, 1, m1, style);
+    write_field(ctx, names, 2, m2, style);
+    write_field(ctx, names, 3, m3, style);
+    write_field(ctx, names, 4, m4, style);
+    write_field(ctx, names, 5, m5, style);
+    write_field(ctx, names, 6, m6, style);
+    write_field(ctx, names, 7, m7, style);
+    write_field(ctx, names, 8, m8, style);
+    write_field(ctx, names, 9, m9, style);
+    close_bracket(ctx, names, style);
   }
 };
 
 template <> struct derived_printer<11> {
   template <typename T>
-  static void run(const T &value, format_context &ctx, const derived_names *names) {
+  static void run(const T &value, format_context &ctx, const derived_names *names,
+                             const derive_style &style) {
     const auto &[m0, m1, m2, m3, m4, m5, m6, m7, m8, m9, m10] = value;
-    open_bracket(ctx, names);
-    write_field(ctx, names, 0, m0);
-    write_field(ctx, names, 1, m1);
-    write_field(ctx, names, 2, m2);
-    write_field(ctx, names, 3, m3);
-    write_field(ctx, names, 4, m4);
-    write_field(ctx, names, 5, m5);
-    write_field(ctx, names, 6, m6);
-    write_field(ctx, names, 7, m7);
-    write_field(ctx, names, 8, m8);
-    write_field(ctx, names, 9, m9);
-    write_field(ctx, names, 10, m10);
-    close_bracket(ctx, names);
+    open_bracket(ctx, names, style);
+    write_field(ctx, names, 0, m0, style);
+    write_field(ctx, names, 1, m1, style);
+    write_field(ctx, names, 2, m2, style);
+    write_field(ctx, names, 3, m3, style);
+    write_field(ctx, names, 4, m4, style);
+    write_field(ctx, names, 5, m5, style);
+    write_field(ctx, names, 6, m6, style);
+    write_field(ctx, names, 7, m7, style);
+    write_field(ctx, names, 8, m8, style);
+    write_field(ctx, names, 9, m9, style);
+    write_field(ctx, names, 10, m10, style);
+    close_bracket(ctx, names, style);
   }
 };
 
 template <> struct derived_printer<12> {
   template <typename T>
-  static void run(const T &value, format_context &ctx, const derived_names *names) {
+  static void run(const T &value, format_context &ctx, const derived_names *names,
+                             const derive_style &style) {
     const auto &[m0, m1, m2, m3, m4, m5, m6, m7, m8, m9, m10, m11] = value;
-    open_bracket(ctx, names);
-    write_field(ctx, names, 0, m0);
-    write_field(ctx, names, 1, m1);
-    write_field(ctx, names, 2, m2);
-    write_field(ctx, names, 3, m3);
-    write_field(ctx, names, 4, m4);
-    write_field(ctx, names, 5, m5);
-    write_field(ctx, names, 6, m6);
-    write_field(ctx, names, 7, m7);
-    write_field(ctx, names, 8, m8);
-    write_field(ctx, names, 9, m9);
-    write_field(ctx, names, 10, m10);
-    write_field(ctx, names, 11, m11);
-    close_bracket(ctx, names);
+    open_bracket(ctx, names, style);
+    write_field(ctx, names, 0, m0, style);
+    write_field(ctx, names, 1, m1, style);
+    write_field(ctx, names, 2, m2, style);
+    write_field(ctx, names, 3, m3, style);
+    write_field(ctx, names, 4, m4, style);
+    write_field(ctx, names, 5, m5, style);
+    write_field(ctx, names, 6, m6, style);
+    write_field(ctx, names, 7, m7, style);
+    write_field(ctx, names, 8, m8, style);
+    write_field(ctx, names, 9, m9, style);
+    write_field(ctx, names, 10, m10, style);
+    write_field(ctx, names, 11, m11, style);
+    close_bracket(ctx, names, style);
   }
 };
 
 template <> struct derived_printer<13> {
   template <typename T>
-  static void run(const T &value, format_context &ctx, const derived_names *names) {
+  static void run(const T &value, format_context &ctx, const derived_names *names,
+                             const derive_style &style) {
     const auto &[m0, m1, m2, m3, m4, m5, m6, m7, m8, m9, m10, m11, m12] = value;
-    open_bracket(ctx, names);
-    write_field(ctx, names, 0, m0);
-    write_field(ctx, names, 1, m1);
-    write_field(ctx, names, 2, m2);
-    write_field(ctx, names, 3, m3);
-    write_field(ctx, names, 4, m4);
-    write_field(ctx, names, 5, m5);
-    write_field(ctx, names, 6, m6);
-    write_field(ctx, names, 7, m7);
-    write_field(ctx, names, 8, m8);
-    write_field(ctx, names, 9, m9);
-    write_field(ctx, names, 10, m10);
-    write_field(ctx, names, 11, m11);
-    write_field(ctx, names, 12, m12);
-    close_bracket(ctx, names);
+    open_bracket(ctx, names, style);
+    write_field(ctx, names, 0, m0, style);
+    write_field(ctx, names, 1, m1, style);
+    write_field(ctx, names, 2, m2, style);
+    write_field(ctx, names, 3, m3, style);
+    write_field(ctx, names, 4, m4, style);
+    write_field(ctx, names, 5, m5, style);
+    write_field(ctx, names, 6, m6, style);
+    write_field(ctx, names, 7, m7, style);
+    write_field(ctx, names, 8, m8, style);
+    write_field(ctx, names, 9, m9, style);
+    write_field(ctx, names, 10, m10, style);
+    write_field(ctx, names, 11, m11, style);
+    write_field(ctx, names, 12, m12, style);
+    close_bracket(ctx, names, style);
   }
 };
 
 template <> struct derived_printer<14> {
   template <typename T>
-  static void run(const T &value, format_context &ctx, const derived_names *names) {
+  static void run(const T &value, format_context &ctx, const derived_names *names,
+                             const derive_style &style) {
     const auto &[m0, m1, m2, m3, m4, m5, m6, m7, m8, m9, m10, m11, m12, m13] = value;
-    open_bracket(ctx, names);
-    write_field(ctx, names, 0, m0);
-    write_field(ctx, names, 1, m1);
-    write_field(ctx, names, 2, m2);
-    write_field(ctx, names, 3, m3);
-    write_field(ctx, names, 4, m4);
-    write_field(ctx, names, 5, m5);
-    write_field(ctx, names, 6, m6);
-    write_field(ctx, names, 7, m7);
-    write_field(ctx, names, 8, m8);
-    write_field(ctx, names, 9, m9);
-    write_field(ctx, names, 10, m10);
-    write_field(ctx, names, 11, m11);
-    write_field(ctx, names, 12, m12);
-    write_field(ctx, names, 13, m13);
-    close_bracket(ctx, names);
+    open_bracket(ctx, names, style);
+    write_field(ctx, names, 0, m0, style);
+    write_field(ctx, names, 1, m1, style);
+    write_field(ctx, names, 2, m2, style);
+    write_field(ctx, names, 3, m3, style);
+    write_field(ctx, names, 4, m4, style);
+    write_field(ctx, names, 5, m5, style);
+    write_field(ctx, names, 6, m6, style);
+    write_field(ctx, names, 7, m7, style);
+    write_field(ctx, names, 8, m8, style);
+    write_field(ctx, names, 9, m9, style);
+    write_field(ctx, names, 10, m10, style);
+    write_field(ctx, names, 11, m11, style);
+    write_field(ctx, names, 12, m12, style);
+    write_field(ctx, names, 13, m13, style);
+    close_bracket(ctx, names, style);
   }
 };
 
 template <> struct derived_printer<15> {
   template <typename T>
-  static void run(const T &value, format_context &ctx, const derived_names *names) {
+  static void run(const T &value, format_context &ctx, const derived_names *names,
+                             const derive_style &style) {
     const auto &[m0, m1, m2, m3, m4, m5, m6, m7, m8, m9, m10, m11, m12, m13, m14] = value;
-    open_bracket(ctx, names);
-    write_field(ctx, names, 0, m0);
-    write_field(ctx, names, 1, m1);
-    write_field(ctx, names, 2, m2);
-    write_field(ctx, names, 3, m3);
-    write_field(ctx, names, 4, m4);
-    write_field(ctx, names, 5, m5);
-    write_field(ctx, names, 6, m6);
-    write_field(ctx, names, 7, m7);
-    write_field(ctx, names, 8, m8);
-    write_field(ctx, names, 9, m9);
-    write_field(ctx, names, 10, m10);
-    write_field(ctx, names, 11, m11);
-    write_field(ctx, names, 12, m12);
-    write_field(ctx, names, 13, m13);
-    write_field(ctx, names, 14, m14);
-    close_bracket(ctx, names);
+    open_bracket(ctx, names, style);
+    write_field(ctx, names, 0, m0, style);
+    write_field(ctx, names, 1, m1, style);
+    write_field(ctx, names, 2, m2, style);
+    write_field(ctx, names, 3, m3, style);
+    write_field(ctx, names, 4, m4, style);
+    write_field(ctx, names, 5, m5, style);
+    write_field(ctx, names, 6, m6, style);
+    write_field(ctx, names, 7, m7, style);
+    write_field(ctx, names, 8, m8, style);
+    write_field(ctx, names, 9, m9, style);
+    write_field(ctx, names, 10, m10, style);
+    write_field(ctx, names, 11, m11, style);
+    write_field(ctx, names, 12, m12, style);
+    write_field(ctx, names, 13, m13, style);
+    write_field(ctx, names, 14, m14, style);
+    close_bracket(ctx, names, style);
   }
 };
 
 template <> struct derived_printer<16> {
   template <typename T>
-  static void run(const T &value, format_context &ctx, const derived_names *names) {
+  static void run(const T &value, format_context &ctx, const derived_names *names,
+                             const derive_style &style) {
     const auto &[m0, m1, m2, m3, m4, m5, m6, m7, m8, m9, m10, m11, m12, m13, m14, m15] = value;
-    open_bracket(ctx, names);
-    write_field(ctx, names, 0, m0);
-    write_field(ctx, names, 1, m1);
-    write_field(ctx, names, 2, m2);
-    write_field(ctx, names, 3, m3);
-    write_field(ctx, names, 4, m4);
-    write_field(ctx, names, 5, m5);
-    write_field(ctx, names, 6, m6);
-    write_field(ctx, names, 7, m7);
-    write_field(ctx, names, 8, m8);
-    write_field(ctx, names, 9, m9);
-    write_field(ctx, names, 10, m10);
-    write_field(ctx, names, 11, m11);
-    write_field(ctx, names, 12, m12);
-    write_field(ctx, names, 13, m13);
-    write_field(ctx, names, 14, m14);
-    write_field(ctx, names, 15, m15);
-    close_bracket(ctx, names);
+    open_bracket(ctx, names, style);
+    write_field(ctx, names, 0, m0, style);
+    write_field(ctx, names, 1, m1, style);
+    write_field(ctx, names, 2, m2, style);
+    write_field(ctx, names, 3, m3, style);
+    write_field(ctx, names, 4, m4, style);
+    write_field(ctx, names, 5, m5, style);
+    write_field(ctx, names, 6, m6, style);
+    write_field(ctx, names, 7, m7, style);
+    write_field(ctx, names, 8, m8, style);
+    write_field(ctx, names, 9, m9, style);
+    write_field(ctx, names, 10, m10, style);
+    write_field(ctx, names, 11, m11, style);
+    write_field(ctx, names, 12, m12, style);
+    write_field(ctx, names, 13, m13, style);
+    write_field(ctx, names, 14, m14, style);
+    write_field(ctx, names, 15, m15, style);
+    close_bracket(ctx, names, style);
   }
 };
 
@@ -1651,7 +1666,7 @@ void format_derived(const T &value, format_context &ctx, const format_specs &spe
         ctx.write_char(' ');
       }
     }
-    derived_printer<N>::run(value, ctx, &names);
+    derived_printer<N>::run(value, ctx, &names, make_derive_style(specs));
   }
 }
 
@@ -1670,7 +1685,7 @@ void derive_write_positional(const T &value, format_context &ctx) {
         ctx.write_char(' ');
       }
     }
-    derived_printer<count>::run(value, ctx, nullptr);
+    derived_printer<count>::run(value, ctx, nullptr, derive_style{});
   }
 }
 
@@ -1699,9 +1714,9 @@ void derive_write(format_context &ctx, const format_specs &specs, const T &value
     // 裸指针 / 函数指针：按十六进制地址打印（空指针 → (nil)），与库内指针格式一致
     write_hex_address(ctx, specs, reinterpret_cast<const void *>(value), "(nil)");
   } else if constexpr (has_derived_formatter_v<D>) {
-    efmt_derive_format(value, ctx, specs);   // E_FMT_DERIVE 推导过的类型
+    efmt_derive_format(value, ctx, format_specs{});   // 嵌套固定默认样式：{:#} 只作用于顶层   // E_FMT_DERIVE 推导过的类型
   } else if constexpr (has_field_names_v<D>) {
-    format_via_field_names(ctx, specs, value);   // 类型内一行 E_FMT_FIELDS(...)
+    format_via_field_names(ctx, format_specs{}, value);   // 类型内一行 E_FMT_FIELDS(...)
   } else if constexpr (std::is_aggregate_v<D> && (aggregate_field_count<D>() > 0)) {
     derive_write_positional(value, ctx);     // 内层没声明 → 位置式递归
   } else {
@@ -1740,7 +1755,6 @@ constexpr derived_names parse_name_list(std::string_view text) {
 template <typename T>
 void format_via_field_names(format_context &ctx, const format_specs &specs,
                             const T &value) {
-  (void)specs;
   static constexpr derived_names names = T::efmt_field_names();
   static_assert(names.valid,
                 "E_FMT_FIELDS(...) 里没写字段名，或字段数超过 EFMT_DERIVE_MAX_FIELDS");
@@ -1751,7 +1765,7 @@ void format_via_field_names(format_context &ctx, const format_specs &specs,
       ctx.write_char(' ');
     }
   }
-  derived_printer<names.count>::run(value, ctx, &names);
+  derived_printer<names.count>::run(value, ctx, &names, make_derive_style(specs));
 }
 
 // ---------------------------------------------------------------------------

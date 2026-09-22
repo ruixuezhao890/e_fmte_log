@@ -137,6 +137,7 @@ static void check_text(const char *what, const std::string &actual,
 int main() {
   // ---- FIELDS：只列字段名 ----
   CHECK_TEXT(as_text("{}", point{10, 20}), "{x=10, y=20}");
+  CHECK_TEXT(as_text("{:#}", point{10, 20}), "{\n  x=10,\n  y=20\n}");   // 紧凑风格的多行
   CHECK_TEXT(as_text("{}", point{-1, -2}), "{x=-1, y=-2}");
   CHECK_TEXT(as_text("{}", reading{25.5f, 60.0f, 12345u}), "{temp=25.5, hum=60, ts=12345}");
   CHECK_TEXT(as_text("{}", twelve{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}),
