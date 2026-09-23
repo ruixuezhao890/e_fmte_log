@@ -593,6 +593,35 @@ private:
     return false;
   }
 
+  // 整段连续数字一次写完：每 9 位一组，组内用 32 位除法、整组一次性 memcpy 写。
+  // 收到的是 decimal_digits 的【相对】下标（同 d.digit(i) 的语义），内部加 d.low
+  // 换算成绝对下标。hi < lo 时什么都不做（空段不是错误）。
+  // 旧实现逐字符 write_char + 逐位 (group / 10^k) % 10 + 边界检查；这里把调用数
+  // 从 O(位数) 降到 O(组数)，%f 大精度时热路径明显变短，代码也更小。
+  static void write_digit_run(format_context &ctx, const decimal_digits &d, int hi, int lo) {
+    if (hi < lo) {
+      return;
+    }
+    const int abs_hi = d.low + hi;
+    const int abs_lo = d.low + lo;
+    char buf[9];
+    int i = abs_hi;
+    while (i >= abs_lo) {
+      const int g = i / 9;
+      const int group_lo = g * 9;
+      const int k_end = i - group_lo;  // 本组内从 k_end 往下
+      const int k_begin = (abs_lo > group_lo) ? (abs_lo - group_lo) : 0;
+      const uint32_t group = d.groups[static_cast<size_t>(g)];
+      int n = 0;
+      for (int k = k_end; k >= k_begin; --k) {
+        buf[n++] =
+            static_cast<char>('0' + (group / decimal_digits::pow10_table[k]) % 10);
+      }
+      ctx.write_chars(buf, static_cast<size_t>(n));
+      i = group_lo + k_begin - 1;
+    }
+  }
+
   // --- 共享输出 -------------------------------------------------------------
   // 定点：符号 + 整数部分 + '.' + 小数部分
   //   int_len       整数位数（<= 0 时输出一个 '0'）
@@ -616,9 +645,7 @@ private:
     ctx.write_fill('0', layout.zero_fill);
 
     if (int_len > 0) {
-      for (int i = d.total - 1; i >= d.total - int_len; --i) {
-        ctx.write_char(static_cast<char>('0' + d.digit(i)));
-      }
+      write_digit_run(ctx, d, d.total - 1, d.total - int_len);
     } else {
       ctx.write_char('0');
     }
@@ -627,9 +654,7 @@ private:
       ctx.write_char('.');
     }
     ctx.write_fill('0', static_cast<size_t>(leading_zeros));
-    for (int i = frac_avail - 1; i >= lowest; --i) {
-      ctx.write_char(static_cast<char>('0' + d.digit(i)));
-    }
+    write_digit_run(ctx, d, frac_avail - 1, lowest);
     ctx.write_fill('0', static_cast<size_t>(frac_pad));
     ctx.write_fill(layout.fill, layout.right_fill);
   }
@@ -659,12 +684,12 @@ private:
     if (point) {
       ctx.write_char('.');
     }
-    int produced = 0;
-    for (int i = d.total - 2; i >= lowest && produced < fraction_digits;
-         --i, ++produced) {
-      ctx.write_char(static_cast<char>('0' + d.digit(i)));
+    const int avail = d.total - 1 - lowest;  // 小数部分最多可用位数
+    const int shown = (avail < fraction_digits) ? avail : fraction_digits;
+    if (shown > 0) {
+      write_digit_run(ctx, d, d.total - 2, d.total - 2 - shown + 1);
     }
-    ctx.write_fill('0', static_cast<size_t>(fraction_digits - produced));
+    ctx.write_fill('0', static_cast<size_t>(fraction_digits - shown));
     write_exponent(ctx, exponent, upper);
     ctx.write_fill(layout.fill, layout.right_fill);
   }

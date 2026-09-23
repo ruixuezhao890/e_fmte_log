@@ -144,7 +144,8 @@ struct aggregate_probe<T, std::index_sequence<I...>,
 #endif
 
 // 返回字段数；0 表示"推导不出来"（非聚合体、有基类、字段数超过上限……）
-template <typename T, std::size_t N = 1>
+// N 的默认值已在 format_traits.hpp 的声明处给出（arm-none-eabi-g++ 10.x 只认第一条声明上的默认值）
+template <typename T, std::size_t N>
 constexpr std::size_t aggregate_field_count() {
   if constexpr (N > EFMT_DERIVE_MAX_FIELDS + 1) {
     return 0;
@@ -329,9 +330,9 @@ private:
 #define EFMT_DETAIL_CONCAT_(a, b) a##b
 
 #define EFMT_DETAIL_ARG_COUNT(...) \
-  EFMT_DETAIL_ARG_COUNT_(__VA_ARGS__, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1)
-#define EFMT_DETAIL_ARG_COUNT_(_1, _2, _3, _4, _5, _6, _7, _8, _9, _10, _11, \
-                               _12, N, ...) \
+  EFMT_DETAIL_ARG_COUNT_(__VA_ARGS__, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1)
+#define EFMT_DETAIL_ARG_COUNT_(_1, _2, _3, _4, _5, _6, _7, _8, _9, _10, _11, _12, \
+                               _13, _14, _15, _16, N, ...) \
   N
 
 // 只列字段名：成员类型由 &Type::字段 推导，显示名由 #字段 生成
@@ -1080,9 +1081,14 @@ static_assert(EFMT_DERIVE_MAX_FIELDS >= 1 && EFMT_DERIVE_MAX_FIELDS <= 32,
 // ---------------------------------------------------------------------------
 // 解析结果
 // ---------------------------------------------------------------------------
-struct derived_names {
-  std::string_view items[EFMT_DERIVE_MAX_FIELDS];
-  long long values[EFMT_DERIVE_MAX_FIELDS];   // 枚举取值（结构体不用）
+// 名字表按实际条目数缩放（[N] 数组正好 N 条）：E_FMT_DERIVE / E_FMT_FIELDS 的
+// 静态 rodata 从固定的 ~400B（16 条 × string_view + value）降到 ~(16+8)·N+24B，
+// 典型 2~8 字段类型省 70%~80%。N 由调用方编译期确定：FIELDS 用宏参数个数，
+// E_FMT_DERIVE 先按上限解析一遍拿 count、再按 count 重解析一遍。
+template <std::size_t N>
+struct derived_names_t {
+  std::string_view items[N];
+  long long values[N];   // 枚举取值（结构体不用，保留以共用一套打印器）
   std::size_t count = 0;
   bool is_enum = false;
   bool valid = false;                // 是否解析成功
@@ -1184,8 +1190,9 @@ constexpr long long parse_integer_literal(std::string_view s, bool &ok) {
 }
 
 // 结构体体：按 ; 切语句（深度 0），跳过静态成员/别名/访问修饰符/函数，再按 , 切声明符
-constexpr derived_names parse_struct_body(std::string_view body) {
-  derived_names out{};
+template <std::size_t MaxN>
+constexpr derived_names_t<MaxN> parse_struct_body(std::string_view body) {
+  derived_names_t<MaxN> out{};
   int depth = 0;
   bool ok = true;
   std::size_t stmt_begin = 0;
@@ -1207,7 +1214,7 @@ constexpr derived_names parse_struct_body(std::string_view body) {
     if (stmt.find('(') != std::string_view::npos) {
       const std::string_view fn = function_pointer_name(stmt);   // 函数指针成员要算字段
       if (!fn.empty()) {
-        if (out.count < EFMT_DERIVE_MAX_FIELDS) out.items[out.count++] = fn;
+        if (out.count < MaxN) out.items[out.count++] = fn;
         else ok = false;
       }
       continue;   // 成员函数跳过
@@ -1222,7 +1229,7 @@ constexpr derived_names parse_struct_body(std::string_view body) {
       if (c2 != ',' || inner != 0) continue;
       const std::string_view name = declarator_name(trim(stmt.substr(part_begin, j - part_begin)));
       if (!name.empty()) {
-        if (out.count < EFMT_DERIVE_MAX_FIELDS) out.items[out.count++] = name;
+        if (out.count < MaxN) out.items[out.count++] = name;
         else ok = false;
       }
       part_begin = j + 1;
@@ -1233,8 +1240,9 @@ constexpr derived_names parse_struct_body(std::string_view body) {
 }
 
 // 枚举体：按 , 切项，首标识符为名字，可选的 = 整数字面量
-constexpr derived_names parse_enum_body(std::string_view body) {
-  derived_names out{};
+template <std::size_t MaxN>
+constexpr derived_names_t<MaxN> parse_enum_body(std::string_view body) {
+  derived_names_t<MaxN> out{};
   out.is_enum = true;
   long long next_value = 0;
   int depth = 0;
@@ -1266,7 +1274,7 @@ constexpr derived_names parse_enum_body(std::string_view body) {
       }
       value = parsed;
     }
-    if (out.count < EFMT_DERIVE_MAX_FIELDS) {
+    if (out.count < MaxN) {
       out.items[out.count] = name_part.substr(0, len);
       out.values[out.count] = value;
       ++out.count;
@@ -1279,22 +1287,23 @@ constexpr derived_names parse_enum_body(std::string_view body) {
   return out;
 }
 
-constexpr derived_names parse_derived_declaration(std::string_view text) {
+template <std::size_t MaxN>
+constexpr derived_names_t<MaxN> parse_derived_declaration(std::string_view text) {
   const std::size_t open = text.find('{');
-  if (open == std::string_view::npos) return derived_names{};
+  if (open == std::string_view::npos) return derived_names_t<MaxN>{};
   int depth = 0;
   std::size_t close = std::string_view::npos;
   for (std::size_t i = open; i < text.size(); ++i) {
     if (text[i] == '{') ++depth;
     else if (text[i] == '}') { if (--depth == 0) { close = i; break; } }
   }
-  if (close == std::string_view::npos) return derived_names{};
+  if (close == std::string_view::npos) return derived_names_t<MaxN>{};
 
   const std::string_view head = trim(text.substr(0, open));
   const std::string_view body = text.substr(open + 1, close - open - 1);
   return (head.size() >= 5 && head.substr(0, 5) == "enum ")
-             ? parse_enum_body(body)
-             : parse_struct_body(body);
+             ? parse_enum_body<MaxN>(body)
+             : parse_struct_body<MaxN>(body);
 }
 
 }  // namespace derive_detail
@@ -1312,8 +1321,10 @@ void derive_write_value(format_context &ctx, const T &value) {
 }
 
 // 名字 + " = " + 值；names == nullptr 表示位置式（内层没声明格式化器的聚合体）
-template <typename T>
-void write_field(format_context &ctx, const derived_names *names, std::size_t index,
+// Names 是 derived_names_t<N>（N 随类型变化），这里模板化避免写死 16 条
+// Names == nullptr 时只输出值（位置式）
+template <typename Names, typename T>
+void write_field(format_context &ctx, const Names *names, std::size_t index,
                  const T &value, const derive_style &style) {
   if (index != 0) {
     ctx.write_str(style.sep);
@@ -1325,12 +1336,14 @@ void write_field(format_context &ctx, const derived_names *names, std::size_t in
   derive_write_value(ctx, value);
 }
 
-inline void open_bracket(format_context &ctx, const derived_names *names,
+template <typename Names>
+inline void open_bracket(format_context &ctx, const Names *names,
                             const derive_style &style) {
   ctx.write_str(names != nullptr ? style.open : "(");
 }
 
-inline void close_bracket(format_context &ctx, const derived_names *names,
+template <typename Names>
+inline void close_bracket(format_context &ctx, const Names *names,
                              const derive_style &style) {
   ctx.write_str(names != nullptr ? style.close : ")");
 }
@@ -1339,8 +1352,8 @@ inline void close_bracket(format_context &ctx, const derived_names *names,
 template <std::size_t N> struct derived_printer;
 
 template <> struct derived_printer<1> {
-  template <typename T>
-  static void run(const T &value, format_context &ctx, const derived_names *names,
+  template <typename T, typename Names = derived_names_t<1>>
+  static void run(const T &value, format_context &ctx, const Names *names,
                              const derive_style &style) {
     const auto &[m0] = value;
     open_bracket(ctx, names, style);
@@ -1350,8 +1363,8 @@ template <> struct derived_printer<1> {
 };
 
 template <> struct derived_printer<2> {
-  template <typename T>
-  static void run(const T &value, format_context &ctx, const derived_names *names,
+  template <typename T, typename Names = derived_names_t<1>>
+  static void run(const T &value, format_context &ctx, const Names *names,
                              const derive_style &style) {
     const auto &[m0, m1] = value;
     open_bracket(ctx, names, style);
@@ -1362,8 +1375,8 @@ template <> struct derived_printer<2> {
 };
 
 template <> struct derived_printer<3> {
-  template <typename T>
-  static void run(const T &value, format_context &ctx, const derived_names *names,
+  template <typename T, typename Names = derived_names_t<1>>
+  static void run(const T &value, format_context &ctx, const Names *names,
                              const derive_style &style) {
     const auto &[m0, m1, m2] = value;
     open_bracket(ctx, names, style);
@@ -1375,8 +1388,8 @@ template <> struct derived_printer<3> {
 };
 
 template <> struct derived_printer<4> {
-  template <typename T>
-  static void run(const T &value, format_context &ctx, const derived_names *names,
+  template <typename T, typename Names = derived_names_t<1>>
+  static void run(const T &value, format_context &ctx, const Names *names,
                              const derive_style &style) {
     const auto &[m0, m1, m2, m3] = value;
     open_bracket(ctx, names, style);
@@ -1389,8 +1402,8 @@ template <> struct derived_printer<4> {
 };
 
 template <> struct derived_printer<5> {
-  template <typename T>
-  static void run(const T &value, format_context &ctx, const derived_names *names,
+  template <typename T, typename Names = derived_names_t<1>>
+  static void run(const T &value, format_context &ctx, const Names *names,
                              const derive_style &style) {
     const auto &[m0, m1, m2, m3, m4] = value;
     open_bracket(ctx, names, style);
@@ -1404,8 +1417,8 @@ template <> struct derived_printer<5> {
 };
 
 template <> struct derived_printer<6> {
-  template <typename T>
-  static void run(const T &value, format_context &ctx, const derived_names *names,
+  template <typename T, typename Names = derived_names_t<1>>
+  static void run(const T &value, format_context &ctx, const Names *names,
                              const derive_style &style) {
     const auto &[m0, m1, m2, m3, m4, m5] = value;
     open_bracket(ctx, names, style);
@@ -1420,8 +1433,8 @@ template <> struct derived_printer<6> {
 };
 
 template <> struct derived_printer<7> {
-  template <typename T>
-  static void run(const T &value, format_context &ctx, const derived_names *names,
+  template <typename T, typename Names = derived_names_t<1>>
+  static void run(const T &value, format_context &ctx, const Names *names,
                              const derive_style &style) {
     const auto &[m0, m1, m2, m3, m4, m5, m6] = value;
     open_bracket(ctx, names, style);
@@ -1437,8 +1450,8 @@ template <> struct derived_printer<7> {
 };
 
 template <> struct derived_printer<8> {
-  template <typename T>
-  static void run(const T &value, format_context &ctx, const derived_names *names,
+  template <typename T, typename Names = derived_names_t<1>>
+  static void run(const T &value, format_context &ctx, const Names *names,
                              const derive_style &style) {
     const auto &[m0, m1, m2, m3, m4, m5, m6, m7] = value;
     open_bracket(ctx, names, style);
@@ -1455,8 +1468,8 @@ template <> struct derived_printer<8> {
 };
 
 template <> struct derived_printer<9> {
-  template <typename T>
-  static void run(const T &value, format_context &ctx, const derived_names *names,
+  template <typename T, typename Names = derived_names_t<1>>
+  static void run(const T &value, format_context &ctx, const Names *names,
                              const derive_style &style) {
     const auto &[m0, m1, m2, m3, m4, m5, m6, m7, m8] = value;
     open_bracket(ctx, names, style);
@@ -1474,8 +1487,8 @@ template <> struct derived_printer<9> {
 };
 
 template <> struct derived_printer<10> {
-  template <typename T>
-  static void run(const T &value, format_context &ctx, const derived_names *names,
+  template <typename T, typename Names = derived_names_t<1>>
+  static void run(const T &value, format_context &ctx, const Names *names,
                              const derive_style &style) {
     const auto &[m0, m1, m2, m3, m4, m5, m6, m7, m8, m9] = value;
     open_bracket(ctx, names, style);
@@ -1494,8 +1507,8 @@ template <> struct derived_printer<10> {
 };
 
 template <> struct derived_printer<11> {
-  template <typename T>
-  static void run(const T &value, format_context &ctx, const derived_names *names,
+  template <typename T, typename Names = derived_names_t<1>>
+  static void run(const T &value, format_context &ctx, const Names *names,
                              const derive_style &style) {
     const auto &[m0, m1, m2, m3, m4, m5, m6, m7, m8, m9, m10] = value;
     open_bracket(ctx, names, style);
@@ -1515,8 +1528,8 @@ template <> struct derived_printer<11> {
 };
 
 template <> struct derived_printer<12> {
-  template <typename T>
-  static void run(const T &value, format_context &ctx, const derived_names *names,
+  template <typename T, typename Names = derived_names_t<1>>
+  static void run(const T &value, format_context &ctx, const Names *names,
                              const derive_style &style) {
     const auto &[m0, m1, m2, m3, m4, m5, m6, m7, m8, m9, m10, m11] = value;
     open_bracket(ctx, names, style);
@@ -1537,8 +1550,8 @@ template <> struct derived_printer<12> {
 };
 
 template <> struct derived_printer<13> {
-  template <typename T>
-  static void run(const T &value, format_context &ctx, const derived_names *names,
+  template <typename T, typename Names = derived_names_t<1>>
+  static void run(const T &value, format_context &ctx, const Names *names,
                              const derive_style &style) {
     const auto &[m0, m1, m2, m3, m4, m5, m6, m7, m8, m9, m10, m11, m12] = value;
     open_bracket(ctx, names, style);
@@ -1560,8 +1573,8 @@ template <> struct derived_printer<13> {
 };
 
 template <> struct derived_printer<14> {
-  template <typename T>
-  static void run(const T &value, format_context &ctx, const derived_names *names,
+  template <typename T, typename Names = derived_names_t<1>>
+  static void run(const T &value, format_context &ctx, const Names *names,
                              const derive_style &style) {
     const auto &[m0, m1, m2, m3, m4, m5, m6, m7, m8, m9, m10, m11, m12, m13] = value;
     open_bracket(ctx, names, style);
@@ -1584,8 +1597,8 @@ template <> struct derived_printer<14> {
 };
 
 template <> struct derived_printer<15> {
-  template <typename T>
-  static void run(const T &value, format_context &ctx, const derived_names *names,
+  template <typename T, typename Names = derived_names_t<1>>
+  static void run(const T &value, format_context &ctx, const Names *names,
                              const derive_style &style) {
     const auto &[m0, m1, m2, m3, m4, m5, m6, m7, m8, m9, m10, m11, m12, m13, m14] = value;
     open_bracket(ctx, names, style);
@@ -1609,8 +1622,8 @@ template <> struct derived_printer<15> {
 };
 
 template <> struct derived_printer<16> {
-  template <typename T>
-  static void run(const T &value, format_context &ctx, const derived_names *names,
+  template <typename T, typename Names = derived_names_t<1>>
+  static void run(const T &value, format_context &ctx, const Names *names,
                              const derive_style &style) {
     const auto &[m0, m1, m2, m3, m4, m5, m6, m7, m8, m9, m10, m11, m12, m13, m14, m15] = value;
     open_bracket(ctx, names, style);
@@ -1635,9 +1648,9 @@ template <> struct derived_printer<16> {
 };
 
 // 枚举：取值 → 名字；未列出的取值 → 底层整数
-template <typename T>
+template <typename T, typename Names>
 void derive_write_enum(const T &value, format_context &ctx, const format_specs &specs,
-                       const derived_names &names) {
+                       const Names &names) {
   using underlying = std::underlying_type_t<T>;
   const bool as_unsigned = !std::is_signed<underlying>::value;
   const long long as_signed = static_cast<long long>(static_cast<underlying>(value));
@@ -1655,7 +1668,7 @@ void derive_write_enum(const T &value, format_context &ctx, const format_specs &
 
 template <typename T, std::size_t N>
 void format_derived(const T &value, format_context &ctx, const format_specs &specs,
-                    const derived_names &names) {
+                    const derived_names_t<N> &names) {
   if constexpr (std::is_enum<T>::value) {
     derive_write_enum(value, ctx, specs, names);
   } else {
@@ -1685,7 +1698,9 @@ void derive_write_positional(const T &value, format_context &ctx) {
         ctx.write_char(' ');
       }
     }
-    derived_printer<count>::run(value, ctx, nullptr, derive_style{});
+    derived_printer<count>::run(
+        value, ctx, static_cast<const derived_names_t<count> *>(nullptr),
+        derive_style{});
   }
 }
 
@@ -1733,9 +1748,11 @@ void derive_write(format_context &ctx, const format_specs &specs, const T &value
 // ---------------------------------------------------------------------------
 // 类型内一行：E_FMT_FIELDS(字段, ...)
 // ---------------------------------------------------------------------------
-// 解析 "retry, verbose" 这样的名字清单
-constexpr derived_names parse_name_list(std::string_view text) {
-  derived_names out{};
+// 解析 "retry, verbose" 这样的名字清单；N = 宏参数个数，表正好 N 条
+// （E_FMT_FIELDS 的宏参数个数编译期已知，直接按它开户，不用两遍解析）
+template <std::size_t MaxN>
+constexpr derived_names_t<MaxN> parse_name_list(std::string_view text) {
+  derived_names_t<MaxN> out{};
   int depth = 0;
   std::size_t begin = 0;
   for (std::size_t i = 0; i <= text.size(); ++i) {
@@ -1746,7 +1763,7 @@ constexpr derived_names parse_name_list(std::string_view text) {
     const std::string_view item = derive_detail::trim(text.substr(begin, i - begin));
     begin = i + 1;
     if (item.empty()) continue;
-    if (out.count < EFMT_DERIVE_MAX_FIELDS) out.items[out.count++] = item;
+    if (out.count < MaxN) out.items[out.count++] = item;
   }
   out.valid = out.count > 0;
   return out;
@@ -1755,7 +1772,8 @@ constexpr derived_names parse_name_list(std::string_view text) {
 template <typename T>
 void format_via_field_names(format_context &ctx, const format_specs &specs,
                             const T &value) {
-  static constexpr derived_names names = T::efmt_field_names();
+  using names_type = decltype(T::efmt_field_names());
+  static constexpr names_type names = T::efmt_field_names();
   static_assert(names.valid,
                 "E_FMT_FIELDS(...) 里没写字段名，或字段数超过 EFMT_DERIVE_MAX_FIELDS");
   if constexpr (EFMT_DERIVE_SHOW_TYPE != 0) {
@@ -1786,22 +1804,24 @@ void format_via_field_names(format_context &ctx, const format_specs &specs,
       const decltype(EFMT_DERIVE_DETAIL_CAT(efmt_derive_reg_, id)) &value,            \
       ::e_fmt::detail::format_context &ctx,                                           \
       const ::e_fmt::detail::format_specs &specs) {                                   \
-    static constexpr ::e_fmt::detail::derived_names                                  \
-        EFMT_DERIVE_DETAIL_CAT(efmt_derive_names_, id) =                              \
-            ::e_fmt::detail::derive_detail::parse_derived_declaration(#__VA_ARGS__);  \
     using efmt_derive_type = decltype(EFMT_DERIVE_DETAIL_CAT(efmt_derive_reg_, id));  \
-    static_assert(                                                                    \
-        !EFMT_DERIVE_DETAIL_CAT(efmt_derive_names_, id).unknown_initializer,          \
+    /* 第一遍：按上限解析出字段数，顺带做完所有编译期校验 */                      \
+    static constexpr auto efmt_derive_tmp_ =                                          \
+        ::e_fmt::detail::derive_detail::parse_derived_declaration<                    \
+            EFMT_DERIVE_MAX_FIELDS>(#__VA_ARGS__);                                    \
+    static_assert(!efmt_derive_tmp_.unknown_initializer,                              \
         "枚举里有非字面量的初始值（例如 A = 1 << 3）：E_FMT_DERIVE 的自动模式只认"     \
         "整数字面量。请改用 E_FMT_FIELDS(取值名, ...) 写在枚举内部显式列出");          \
-    static_assert(                                                                    \
-        EFMT_DERIVE_DETAIL_CAT(efmt_derive_names_, id).valid,                         \
+    static_assert(efmt_derive_tmp_.valid,                                             \
         "E_FMT_DERIVE 解析不出这段声明里的字段/取值：请检查写法，或改用 "              \
         "E_FMT_FIELDS(字段, ...) 写在类型内部显式列出");                              \
-    constexpr std::size_t efmt_derive_count =                                         \
-        EFMT_DERIVE_DETAIL_CAT(efmt_derive_names_, id).count;                         \
+    /* 第二遍：按真实字段数重建静态表（正好 N 条，省 Flash）*/                     \
+    constexpr std::size_t efmt_derive_count = efmt_derive_tmp_.count;                 \
+    static constexpr auto efmt_derive_names_ =                                        \
+        ::e_fmt::detail::derive_detail::parse_derived_declaration<                    \
+            (efmt_derive_count > 0 ? efmt_derive_count : 1)>(#__VA_ARGS__);           \
     ::e_fmt::detail::format_derived<efmt_derive_type, efmt_derive_count>(             \
-        value, ctx, specs, EFMT_DERIVE_DETAIL_CAT(efmt_derive_names_, id));           \
+        value, ctx, specs, efmt_derive_names_);                                       \
   }
 
 // 用法：E_FMT_DERIVE(struct imu { float ax, ay, az; });
@@ -1810,7 +1830,7 @@ void format_via_field_names(format_context &ctx, const format_specs &specs,
 // 类型内一行：只能列字段名，类型/字符串/成员指针全自动。
 // 用在 E_FMT_DERIVE 覆盖不到的场合：声明里有 #if、模板结构体、字段数超上限、给已有类型补一行。
 //   struct cfg { int retry; bool verbose; E_FMT_FIELDS(retry, verbose); };
-#define E_FMT_FIELDS(...)                                                          static constexpr ::e_fmt::detail::derived_names efmt_field_names() {                return ::e_fmt::detail::parse_name_list(#__VA_ARGS__);                          }
+#define E_FMT_FIELDS(...)                                                          static constexpr ::e_fmt::detail::derived_names_t<EFMT_DETAIL_ARG_COUNT(__VA_ARGS__)> efmt_field_names() {                return ::e_fmt::detail::parse_name_list<EFMT_DETAIL_ARG_COUNT(__VA_ARGS__)>(#__VA_ARGS__);                          }
 
 
 } // namespace e_fmt::detail

@@ -121,8 +121,9 @@ void format_via_field_names(format_context &ctx, const format_specs &specs,
                             const T &value);
 
 // 同样定义在 format_derive.hpp：自动推导出的字段数（0 表示推不出来）。
-// 注意这里是两条模板参数：定义处 N 有默认值 1，声明处不能重复给默认值。
-template <typename T, std::size_t N>
+// N 的默认值必须放在这里的第一条声明上：arm-none-eabi-g++ 10.x 对【定义处补默认
+// 模板参数】的写法无法推导（宿主 GCC 15 反而能过），实际嵌入式工具链会编译失败。
+template <typename T, std::size_t N = 1>
 constexpr std::size_t aggregate_field_count();
 
 // ============================================================================

@@ -340,6 +340,22 @@ static void test_compile_time_strings() {
   // E_FMT_STR 也能隐式转成 std::string_view，任何接口都能用
   const std::string_view holder_view = E_FMT_STR("sv");
   CHECK_EQ(std::string(holder_view), std::string("sv"));
+
+  // 编译期快路径与运行期路径输出必须逐字节一致
+  // 1) 无转义、带格式规范：走编译期预解析
+  CHECK_EQ(format(E_FMT_STR("{:<6}|{:04X}|{:+.2f}"), "ab", 0x2A, 3.5),
+           std::string("ab    |002A|+3.50"));
+  // 2) 显式索引与顺序参数混用
+  CHECK_EQ(format(E_FMT_STR("{1}-{0}"), "a", "b"), std::string("b-a"));
+  // 3) 含转义（{{ / }}）：退回运行期路径，语义不变
+  CHECK_EQ(format(E_FMT_STR("value {{escaped}} = {}"), 42),
+           std::string("value {escaped} = 42"));
+  CHECK_EQ(format(E_FMT_STR("{{{:04x}}}"), 0xAB), std::string("{00ab}"));
+  // 4) 纯字面量（0 字段）：plan 的 N 兜底为 1，不能出错
+  CHECK_EQ(format(E_FMT_STR("just text")), std::string("just text"));
+  // 5) 截断语义与运行期一致
+  CHECK_EQ(format_to(buffer, sizeof(buffer), E_FMT_STR("{:>20}"), 7),
+           static_cast<size_t>(20));
 }
 
 static void test_size_matches_output() {

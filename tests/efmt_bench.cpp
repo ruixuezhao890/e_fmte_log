@@ -47,6 +47,17 @@ int main() {
     g_sink += s.size();
   });
 
+  // 编译期预解析快路径（E_FMT_STR）：同样的串，跳过运行期扫描/规范解析
+  time_ns("checked spec mix (E_FMT_STR)", N, [&] {
+    std::string s = format(E_FMT_STR("{:<12}|{:>8.2f}|{:#06x}"), "name", 3.14159, 255u);
+    g_sink += s.size();
+  });
+
+  time_ns("checked 3 fields (E_FMT_STR)", N, [&] {
+    std::string s = format(E_FMT_STR("x={}, y={}, z={}"), 10, 20, 30);
+    g_sink += s.size();
+  });
+
   time_ns("formatted_size", N, [&] { g_sink += formatted_size("Value: {} of {}", 3, 10); });
 
   time_ns("long text (200 chars)", N, [&] {

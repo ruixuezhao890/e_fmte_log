@@ -140,14 +140,31 @@ private:
   }
 
   // 从缓冲末尾向前写数字，返回位数（避免先逆序再翻转）
+  // 十进制走【一次除 100 出两位】的快路径：64 位除法次数减半（Cortex-M0 无硬件
+  // 除法时这是整数热路径的主要成本，M3+ 也少一半指令）。不建 200B 的 digits2
+  // 查表：r<100 拆两位只是两次 32 位乘移，嵌入式下查表反而费 Flash。
   template <unsigned Base, bool Upper>
   static unsigned to_digits(char *end, uint64_t value) {
-    const char *alphabet = Upper ? "0123456789ABCDEF" : "0123456789abcdef";
     char *p = end;
-    do {
-      *--p = alphabet[value % Base];
-      value /= Base;
-    } while (value != 0);
+    if constexpr (Base == 10) {
+      while (value >= 100) {
+        const uint64_t r = value % 100;
+        value /= 100;
+        *--p = static_cast<char>('0' + (r % 10));
+        *--p = static_cast<char>('0' + (r / 10));
+      }
+      if (value >= 10) {
+        *--p = static_cast<char>('0' + (value % 10));
+        value /= 10;
+      }
+      *--p = static_cast<char>('0' + value);
+    } else {
+      const char *alphabet = Upper ? "0123456789ABCDEF" : "0123456789abcdef";
+      do {
+        *--p = alphabet[value % Base];
+        value /= Base;
+      } while (value != 0);
+    }
     return static_cast<unsigned>(end - p);
   }
 };

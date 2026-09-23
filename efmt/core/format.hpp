@@ -51,6 +51,11 @@ template <typename... Args>
 size_t format_to(char *buffer, size_t size, std::string_view fmt_str,
                  Args &&...args);
 
+// 已打包参数的非模板入口：编译期快路径（format_checked_to）在它定义之前
+// 展开，模板体里的非依赖调用需要这条前置声明才能做普通查找。
+inline size_t format_to(char *buffer, size_t size, std::string_view fmt_str,
+                        const detail::format_args &args);
+
 #if EFMT_ENABLE_DYNAMIC_STRING
 template <typename... Args>
 std::string format(std::string_view fmt_str, Args &&...args);
@@ -199,6 +204,47 @@ inline format_args pack_format_args(Args &&...args) {
 }
 
 // ============================================================================
+// 编译期格式串快路径执行器
+// ============================================================================
+// 所有 E_FMT_STR 调用共用这一份非模板代码：字段位置/规范已在编译期算好，
+// 运行期只做 字面量写入 + 参数分发，不再扫描括号、不再解析格式规范。
+// 返回值与 snprintf 语义一致（同运行期 format_to：完整长度 + NUL 终止）。
+inline size_t execute_checked_fields(char *buffer, size_t size, const char *fmt,
+                                     const checked_field *fields, size_t field_count,
+                                     size_t trailing, const format_args &args) {
+  format_context ctx(buffer, size);
+  const char *p = fmt;
+  for (size_t i = 0; i < field_count; ++i) {
+    ctx.write_chars(p, fields[i].literal_len);
+    p += fields[i].literal_len;
+    const format_arg &arg = args.get(fields[i].arg_id);
+    if (arg.type == arg_type::none) {
+      ctx.write_str("{?}");
+    } else if (arg.formatter) {
+      arg.formatter(ctx, fields[i].specs, arg);
+    }
+    p += fields[i].field_span;
+  }
+  ctx.write_chars(p, trailing);
+  const size_t needed = ctx.pos();
+  if (size > 0) {
+    buffer[(needed < size) ? needed : size - 1] = '\0';
+  }
+  return needed;
+}
+
+// checked 格式串入口：plan 有效走快路径，否则退回运行期路径（含转义展开）
+template <typename Plan>
+size_t format_checked_to(char *buffer, size_t size, const char *fmt, const Plan &plan,
+                         const format_args &packed) {
+  if (!plan.valid) {
+    return format_to(buffer, size, std::string_view(fmt, plan.text_len), packed);
+  }
+  return execute_checked_fields(buffer, size, fmt, plan.fields, plan.field_count,
+                                plan.trailing, packed);
+}
+
+// ============================================================================
 // 动态字符串输出
 // ============================================================================
 // Almost every format() result fits in a small stack buffer, so the common case
@@ -218,6 +264,22 @@ std::string format_string(Executor &executor) {
   std::string out;
   out.resize(needed);
   executor.execute(out.data(), out.size());
+  return out;
+}
+
+// checked 格式串返回 std::string 的助手（与 format_string 同款两遍策略）
+template <typename Plan>
+std::string format_checked_string(const char *fmt, const Plan &plan,
+                                  const format_args &packed) {
+  char local[EFMT_STRING_BUFFER_SIZE];
+  const size_t needed = format_checked_to(local, sizeof(local), fmt, plan, packed);
+  if (needed < sizeof(local)) {
+    return std::string(local, needed);
+  }
+
+  std::string out;
+  out.resize(needed);
+  format_checked_to(out.data(), out.size(), fmt, plan, packed);
   return out;
 }
 #endif  // EFMT_ENABLE_DYNAMIC_STRING
@@ -392,14 +454,16 @@ size_t formatted_size(std::string_view fmt_str, Args &&...args) {
 // ============================================================================
 // 编译期校验接口（E_FMT_STR / E_FMT_DECLARE_STR）
 // ============================================================================
-// These overloads only exist to run the argument-count check at compile time;
-// they forward to the std::string_view versions above.
+// 除了运行参数个数检查，还走编译期预解析快路径：plan.valid 时运行期不再
+// 扫描括号/解析格式规范；含转义（{{ / }}）的串自动退回运行期路径，语义一致。
 #if EFMT_ENABLE_DYNAMIC_STRING
 template <typename Holder, typename... Args,
           typename = std::enable_if_t<detail::is_checked_format_string_v<Holder>>>
 std::string format(Holder, Args &&...args) {
   detail::check_format_string<Holder, Args...>();
-  return format(std::string_view(Holder::data()), static_cast<Args &&>(args)...);
+  static constexpr auto plan = Holder::plan();
+  auto packed = detail::pack_format_args(static_cast<Args &&>(args)...);
+  return detail::format_checked_string(Holder::data(), plan, packed);
 }
 #endif
 
@@ -407,8 +471,9 @@ template <typename Holder, typename... Args,
           typename = std::enable_if_t<detail::is_checked_format_string_v<Holder>>>
 size_t format_to(char *buffer, size_t size, Holder, Args &&...args) {
   detail::check_format_string<Holder, Args...>();
-  return format_to(buffer, size, std::string_view(Holder::data()),
-                   static_cast<Args &&>(args)...);
+  static constexpr auto plan = Holder::plan();
+  auto packed = detail::pack_format_args(static_cast<Args &&>(args)...);
+  return detail::format_checked_to(buffer, size, Holder::data(), plan, packed);
 }
 
 #if EFMT_ENABLE_DYNAMIC_STRING
@@ -416,7 +481,9 @@ template <typename Holder, typename... Args,
           typename = std::enable_if_t<detail::is_checked_format_string_v<Holder>>>
 void format_to(std::string &out, Holder, Args &&...args) {
   detail::check_format_string<Holder, Args...>();
-  format_to(out, std::string_view(Holder::data()), static_cast<Args &&>(args)...);
+  static constexpr auto plan = Holder::plan();
+  auto packed = detail::pack_format_args(static_cast<Args &&>(args)...);
+  out = detail::format_checked_string(Holder::data(), plan, packed);
 }
 #endif
 
@@ -424,8 +491,9 @@ template <typename Holder, typename... Args,
           typename = std::enable_if_t<detail::is_checked_format_string_v<Holder>>>
 size_t formatted_size(Holder, Args &&...args) {
   detail::check_format_string<Holder, Args...>();
-  return formatted_size(std::string_view(Holder::data()),
-                        static_cast<Args &&>(args)...);
+  static constexpr auto plan = Holder::plan();
+  auto packed = detail::pack_format_args(static_cast<Args &&>(args)...);
+  return detail::format_checked_to(nullptr, 0, Holder::data(), plan, packed);
 }
 
 // ============================================================================

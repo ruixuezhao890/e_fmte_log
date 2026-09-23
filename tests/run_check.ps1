@@ -200,7 +200,8 @@ if ($Size) {
     )
     $templates = @(
         @{ Name = 'default (built-in float)'; Source = 'efmt_embedded_build.cpp'; Defines = @('-DEFMT_ENABLE_HOSTED=0') },
-        @{ Name = 'minimal (no float, 4 args)'; Source = 'efmt_tiny_build.cpp'; Defines = @('-DEFMT_ENABLE_HOSTED=0', '-DEFMT_ENABLE_FLOAT=0', '-DEFMT_MAX_FORMAT_ARGS=4') }
+        @{ Name = 'minimal (no float, 4 args)'; Source = 'efmt_tiny_build.cpp'; Defines = @('-DEFMT_ENABLE_HOSTED=0', '-DEFMT_ENABLE_FLOAT=0', '-DEFMT_MAX_FORMAT_ARGS=4') },
+        @{ Name = 'derive (built-in float)'; Source = 'efmt_derive_size_probe.cpp'; Defines = @('-DEFMT_ENABLE_HOSTED=0') }
     )
     foreach ($target in $targets) {
         $compiler = Get-Command $target.Cxx -ErrorAction SilentlyContinue
