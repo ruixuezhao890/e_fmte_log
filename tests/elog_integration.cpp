@@ -120,6 +120,20 @@ int main() {
   logger->info("var={}", var);
   CHECK(std::strstr(g_sink, "var=9") != nullptr);
 
+  // ---- 单遍合并快路径 vs 老两步路径：输出必须一致 ----
+  // 显式索引：合并后索引含义会变，必须回退老路径
+  reset_sink();
+  logger->info("{1}-{0}", "a", "b");
+  CHECK(std::strstr(g_sink, "b-a") != nullptr);
+  // {{ }} 转义：快路径由 executor 处理，输出与老路径一致
+  reset_sink();
+  logger->info("brace {{x}} = {}", 1);
+  CHECK(std::strstr(g_sink, "brace {x} = 1") != nullptr);
+  // 5 个参数：宿主走快路径（4+5<=16），嵌入式回退老路径（4+5>8），输出都要对
+  reset_sink();
+  logger->info("{} {} {} {} {}", 1, 2, 3, 4, 5);
+  CHECK(std::strstr(g_sink, "1 2 3 4 5") != nullptr);
+
   if (failures == 0) {
     std::printf("elog integration OK (ETL types supported)\n");
     return 0;
