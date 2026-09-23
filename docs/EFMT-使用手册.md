@@ -809,6 +809,31 @@ static_assert(!EFMT_ENABLE_ANSI_STYLES, "嵌入式不要往串口发转义序列
 
 elog 的逐项实测（含"被过滤级别"的零成本证据）见 [13.6](#136-elog-性能实测gcc-x64--o2可复现)。
 
+### 8.4b 嵌入式侧相对周期（QEMU `-icount`，Cortex-M4，可复现）
+
+QEMU 里的 CPU 周期计数（x64 上面向 MCU 的 ns 数没有参考价值，M4 指令成本分布不同）。
+`tests/run_check.ps1 -QemuBench` 在 QEMU `mps2-an386` + `-icount` + SysTick 计时
+（实测 1 tick ≈ 570 条 guest 指令，同一环境标定），**确定性可复现**，适合相对对比；
+不代表真板时序（无缓存/流水线/访存延迟）。
+
+| 用例 | ticks/op | ≈指令/op |
+|---|---:|---:|
+| `int {}` | 0.50 | ~285 |
+| 混合规范 `{:<12}\|{:>8.2f}\|{:#06x}` | 2.52 | ~1436 |
+| 三字段 `x={}, y={}, z={}` | 1.57 | ~895 |
+| 混合规范 + `E_FMT_STR` | 1.71 | ~975（-32%）|
+| 三字段 + `E_FMT_STR` | 1.22 | ~695（-22%）|
+| `{:.2f}` | 1.36 | ~775 |
+| `{:e}` | 1.95 | ~1112 |
+| `{:g}` | 2.00 | ~1140 |
+| 200 字符长文本 | 5.57 | ~3175 |
+| `E_FMT_DERIVE` 结构体 | 0.98 | ~559 |
+| `E_FMT_DERIVE` 枚举 | 0.30 | ~171 |
+
+结论：**`E_FMT_STR` 编译期预解析在 M4 上与宿主一致快 22~32%**；单次整数格式化约
+285 条指令级；浮点 `{:.2f}` 约 775 条指令级。真要真板绝对数，用 STM32CubeIDE 的
+cycle-accurate 仿真或真机 DWT 复核。
+
 ---
 
 ## 9. 浮点格式化
@@ -1422,6 +1447,7 @@ detail::styles::error() / warning() / info() / success() / debug() / muted() / h
 .\tests\run_check.ps1 -Bench             # 额外跑微基准（libc 浮点 / 自带浮点各一轮）
 .\tests\run_check.ps1 -Size              # 额外交叉编译量 Flash/RAM（需要 arm-none-eabi-g++ 等）
 .\tests\run_check.ps1 -Qemu              # 额外在 QEMU（mps2-an386，Cortex-M4）里真实运行嵌入式行为检查
+.\tests\run_check.ps1 -QemuBench         # 额外输出嵌入式侧相对周期（-icount + SysTick）
 .\tests\run_check.ps1 -EtlInclude D:\etl\include   # 重新指向 ETL 头文件
 ```
 

@@ -6,12 +6,14 @@
 #   .\tests\run_check.ps1 -Bench                      # also run the micro-benchmark
 #   .\tests\run_check.ps1 -Size                       # also report the MCU footprint
 #   .\tests\run_check.ps1 -Qemu                       # run the embedded check on QEMU (mps2-an386)
+#   .\tests\run_check.ps1 -QemuBench                   # embedded cycle numbers on QEMU (-icount)
 param(
     [string]$EtlInclude = $env:EFMT_ETL_INCLUDE,
     [string]$Cxx = 'g++',
     [switch]$Bench,
     [switch]$Size,
-    [switch]$Qemu
+    [switch]$Qemu,
+    [switch]$QemuBench
 )
 
 $ErrorActionPreference = 'Stop'
@@ -287,6 +289,62 @@ if ($Qemu) {
             }
         } else {
             Write-Host '  QEMU check: build failed'
+            $script:failures++
+        }
+    }
+}
+
+# -QemuBench：嵌入式周期数（QEMU mps2-an386 + -icount + SysTick），相对对比可复现
+if ($QemuBench) {
+    $bqemu = Get-Command qemu-system-arm -ErrorAction SilentlyContinue
+    $bqarm = Get-Command arm-none-eabi-g++ -ErrorAction SilentlyContinue
+    if (-not $bqemu -or -not $bqarm) {
+        Write-Host "note: qemu-system-arm or arm-none-eabi-g++ not found - skipping -QemuBench"
+    } else {
+        Write-Host '=== embedded cycle bench on QEMU (mps2-an386, -icount) ==='
+        $qsrcDir = Join-Path $PSScriptRoot 'qemu'
+        $qb = Join-Path $out 'qemu_bench.o'
+        $qsb = Join-Path $out 'qemu_bench_start.o'
+        $qelfb = Join-Path $out 'qemu_efmt_bench.elf'
+        $qflags = @('-std=c++17', '-mthumb', '-mcpu=cortex-m4', '-mfloat-abi=soft',
+                    '-ffreestanding', '-fno-exceptions', '-fno-rtti',
+                    '-fno-use-cxa-atexit', '-fno-threadsafe-statics', '-fno-builtin',
+                    '-DEFMT_ENABLE_HOSTED=0', '-Os')
+        & $bqarm @qflags @("-I$include") -c (Join-Path $qsrcDir 'qemu_efmt_bench.cpp') -o $qb
+        $buildOk = ($LASTEXITCODE -eq 0)
+        if ($buildOk) {
+            & $bqarm @('-Os', '-mcpu=cortex-m4', '-mthumb') -c (Join-Path $qsrcDir 'startup.s') -o $qsb
+            $buildOk = ($LASTEXITCODE -eq 0)
+        }
+        if ($buildOk) {
+            $libgcc = & $bqarm -mthumb -mcpu=cortex-m4 -print-libgcc-file-name
+            $linkScript = '-Wl,-T,' + (Join-Path $qsrcDir 'link.ld')
+            & $bqarm -nostartfiles $linkScript '-Wl,--gc-sections' $qb $qsb $libgcc -o $qelfb
+            $buildOk = ($LASTEXITCODE -eq 0)
+        }
+        if ($buildOk) {
+            $serial = Join-Path $out 'qemu_bench_serial.txt'
+            Remove-Item $serial -ErrorAction SilentlyContinue
+            $p = Start-Process -FilePath $bqemu.Source -ArgumentList @('-machine', 'mps2-an386', '-nographic', '-serial', 'stdio', '-monitor', 'none', '-icount', 'shift=0', '-kernel', $qelfb) -RedirectStandardOutput $serial -NoNewWindow -PassThru
+            $deadline = (Get-Date).AddSeconds(40)
+            $done = $false
+            while ((Get-Date) -lt $deadline) {
+                Start-Sleep -Milliseconds 300
+                if (Test-Path $serial) {
+                    $text = Get-Content $serial -Raw -ErrorAction SilentlyContinue
+                    if ($text -match 'sink=') { $done = $true; break }
+                }
+                if ($p.HasExited) { break }
+            }
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+            if ($done) {
+                Get-Content $serial | Where-Object { $_ -match '^bench ' } | ForEach-Object { Write-Host ('  ' + $_) }
+            } else {
+                Write-Host '  QEMU cycle bench: no output (timeout)'
+                $script:failures++
+            }
+        } else {
+            Write-Host '  QEMU cycle bench: build failed'
             $script:failures++
         }
     }

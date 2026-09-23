@@ -212,6 +212,33 @@ Windows / Linux / **ESP-IDF 走宿主配置**（容器、std::string、ANSI、st
   （`g++ -std=c++17 -O2 -I. -Itests/include tests/elog_bench.cpp -o elogbench && ./elogbench`）
 * 嵌入式侧（Cortex-M4 `-Os`）的 **Flash / RAM / 栈** 实测见手册[第 8 章](docs/EFMT-使用手册.md)
 
+### 嵌入式侧相对周期（QEMU `-icount`, Cortex-M4, 可复现）
+
+口径：`tests/run_check.ps1 -QemuBench` 在 QEMU `mps2-an386`（Cortex-M4）+ `-icount` +
+SysTick 计时（1 tick ≈ 570 条 guest 指令，同一环境标定），**确定性可复现**，适合相对对比
+（优化前后 / `E_FMT_STR` 快路径 / 各类型引擎）；不代表真板时序（无缓存/流水线/访存延迟）。
+
+| 用例 | ticks/op | ≈指令/op |
+|---|---:|---:|
+| `int {}` | 0.50 | ~285 |
+| 混合规范 `{:<12}\|{:>8.2f}\|{:#06x}` | 2.52 | ~1436 |
+| 三字段 `x={}, y={}, z={}` | 1.57 | ~895 |
+| 两个参数 `boot {} {}` | 0.87 | ~496 |
+| `formatted_size` | 0.89 | ~507 |
+| 200 字符长文本 | 5.57 | ~3175 |
+| 混合规范 + `E_FMT_STR` | 1.71 | ~975（-32%）|
+| 三字段 + `E_FMT_STR` | 1.22 | ~695（-22%）|
+| `{:.2f}` | 1.36 | ~775 |
+| `{:e}` | 1.95 | ~1112 |
+| `{:g}` | 2.00 | ~1140 |
+| `{:#010x}` | 0.74 | ~422 |
+| `E_FMT_DERIVE` 结构体 | 0.98 | ~559 |
+| `E_FMT_DERIVE` 枚举 | 0.30 | ~171 |
+
+要点：`E_FMT_STR` 编译期预解析在 M4 上与宿主一致快 **22~32%**；单次整数格式化约
+285 条指令级（含格式串扫描）；浮点 `{:.2f}` 约 775 条指令级。要真板绝对数时，
+用 STM32CubeIDE 的 cycle-accurate 仿真或真机 DWT 复核。
+
 ## 验证与自测
 
 ```powershell
@@ -219,6 +246,7 @@ Windows / Linux / **ESP-IDF 走宿主配置**（容器、std::string、ANSI、st
 .\tests\run_check.ps1 -Bench     # 额外跑微基准
 .\tests\run_check.ps1 -Size      # 额外量 Cortex-M / ESP32 的 Flash 与 RAM
 .\tests\run_check.ps1 -Qemu      # 额外在 QEMU (mps2-an386, Cortex-M4) 里真实运行嵌入式行为检查
+.\tests\run_check.ps1 -QemuBench # 额外输出嵌入式侧相对周期（QEMU -icount + SysTick）
 ```
 
 当前基线：行为检查 149 项 × 2 标准（含 `E_FMT_STR` 快路径/转义回退/显式索引用例）、
