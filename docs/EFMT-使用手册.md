@@ -1421,11 +1421,22 @@ detail::styles::error() / warning() / info() / success() / debug() / muted() / h
 .\tests\run_check.ps1                    # 宿主 C++17/C++20 + 嵌入式 + 最小裁剪 + 反例 + elog
 .\tests\run_check.ps1 -Bench             # 额外跑微基准（libc 浮点 / 自带浮点各一轮）
 .\tests\run_check.ps1 -Size              # 额外交叉编译量 Flash/RAM（需要 arm-none-eabi-g++ 等）
+.\tests\run_check.ps1 -Qemu              # 额外在 QEMU（mps2-an386，Cortex-M4）里真实运行嵌入式行为检查
 .\tests\run_check.ps1 -EtlInclude D:\etl\include   # 重新指向 ETL 头文件
 ```
 
-当前基线（全绿）：宿主 **143 项 × 2 标准**、浮点对拍 **24.6 万次比对 0 失败**、
-嵌入式配置 / 最小裁剪配置 / 两个编译期反例 / elog 集成 / 无流无 ANSI 配置。
+**`-Qemu`**：把嵌入式配置的行为检查交叉编译成可启动的 `.elf`（self-contained，无 newlib），
+在 QEMU 的 Cortex-M4（`mps2-an386`）上真实执行：20 项断言（整数/uint64/十六进制/浮点自带引擎/
+截断/`E_FMT_STR`/8 参数/derive/输出回调），经 UART 输出，`ALL PASS (20)` 为绿。
+需要 `qemu-system-arm` 与 `arm-none-eabi-g++`（缺任一即跳过提示）。
+链接注意（踩过的坑）：必须链接 **thumb/v7e-m 的 libgcc**——脚本里用
+`arm-none-eabi-g++ -print-libgcc-file-name` 定位；若用 `-nostdlib` 手写 `-lgcc`，
+GCC 驱动丢失 multilib 的 `-L`，会链到 A32（ARM）libgcc，Thumb 代码调其 64 位除法
+会指令流错乱（实测 `42` 被格式化成了 `80` 并最终 HardFault-Lockup）。
+
+当前基线（全绿）：宿主 **149 项 × 2 标准**、浮点对拍 **24.6 万次比对 0 失败**、
+嵌入式配置 / 最小裁剪配置 / 五个编译期反例 / elog 集成（三种配置）/ 无流无 ANSI 配置 /
+QEMU（Cortex-M4）20 项真 ARM 断言。
 
 ### 15.2 浮点对拍自己跑一遍（可选，想加大样本时）
 

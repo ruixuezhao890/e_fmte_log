@@ -218,6 +218,7 @@ Windows / Linux / **ESP-IDF 走宿主配置**（容器、std::string、ANSI、st
 .\tests\run_check.ps1            # 宿主 C++17/C++20 + 浮点对拍 + 嵌入式 + 最小裁剪 + 编译期反例 + elog
 .\tests\run_check.ps1 -Bench     # 额外跑微基准
 .\tests\run_check.ps1 -Size      # 额外量 Cortex-M / ESP32 的 Flash 与 RAM
+.\tests\run_check.ps1 -Qemu      # 额外在 QEMU (mps2-an386, Cortex-M4) 里真实运行嵌入式行为检查
 ```
 
 当前基线：行为检查 149 项 × 2 标准（含 `E_FMT_STR` 快路径/转义回退/显式索引用例）、

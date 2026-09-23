@@ -5,11 +5,13 @@
 #   .\tests\run_check.ps1 -EtlInclude C:\path\to\etl  # (re)point the ETL include
 #   .\tests\run_check.ps1 -Bench                      # also run the micro-benchmark
 #   .\tests\run_check.ps1 -Size                       # also report the MCU footprint
+#   .\tests\run_check.ps1 -Qemu                       # run the embedded check on QEMU (mps2-an386)
 param(
     [string]$EtlInclude = $env:EFMT_ETL_INCLUDE,
     [string]$Cxx = 'g++',
     [switch]$Bench,
-    [switch]$Size
+    [switch]$Size,
+    [switch]$Qemu
 )
 
 $ErrorActionPreference = 'Stop'
@@ -222,6 +224,70 @@ if ($Size) {
                 Write-Host "  $($template.Name): build failed"
                 $script:failures++
             }
+        }
+    }
+}
+
+# -Qemu：把嵌入式配置的行为检查在 QEMU (mps2-an386, Cortex-M4) 里真实跑一遍
+# 需要 qemu-system-arm + arm-none-eabi-g++；链接必须用 thumb/v7e-m 的 libgcc
+# （-nostdlib 会让 GCC 驱动丢掉 multilib -L，-lgcc 会解析到 A32 libgcc，
+#  Thumb 代码调其 64 位除法会指令流错乱 -> 42 被格式化成 80 + HardFault-Lockup）
+if ($Qemu) {
+    $qemuCmd = Get-Command qemu-system-arm -ErrorAction SilentlyContinue
+    $qarmCmd = Get-Command arm-none-eabi-g++ -ErrorAction SilentlyContinue
+    if (-not $qemuCmd -or -not $qarmCmd) {
+        Write-Host "note: qemu-system-arm or arm-none-eabi-g++ not found - skipping -Qemu"
+    } else {
+        Write-Host '=== embedded check on QEMU (mps2-an386, Cortex-M4) ==='
+        $qsrcDir = Join-Path $PSScriptRoot 'qemu'
+        $qo = Join-Path $out 'qemu_check.o'
+        $qso = Join-Path $out 'qemu_start.o'
+        $qelf = Join-Path $out 'qemu_efmt_check.elf'
+        $qflags = @('-std=c++17', '-mthumb', '-mcpu=cortex-m4', '-mfloat-abi=soft',
+                    '-ffreestanding', '-fno-exceptions', '-fno-rtti',
+                    '-fno-use-cxa-atexit', '-fno-threadsafe-statics', '-fno-builtin',
+                    '-DEFMT_ENABLE_HOSTED=0', '-Os')
+        & $qarmCmd @qflags @("-I$include") -c (Join-Path $qsrcDir 'qemu_efmt_check.cpp') -o $qo
+        $buildOk = ($LASTEXITCODE -eq 0)
+        if ($buildOk) {
+            & $qarmCmd @('-Os', '-mcpu=cortex-m4', '-mthumb') -c (Join-Path $qsrcDir 'startup.s') -o $qso
+            $buildOk = ($LASTEXITCODE -eq 0)
+        }
+        if ($buildOk) {
+            $libgcc = & $qarmCmd -mthumb -mcpu=cortex-m4 -print-libgcc-file-name
+            $linkScript = '-Wl,-T,' + (Join-Path $qsrcDir 'link.ld')
+            & $qarmCmd -nostartfiles $linkScript '-Wl,--gc-sections' $qo $qso $libgcc -o $qelf
+            $buildOk = ($LASTEXITCODE -eq 0)
+        }
+        if ($buildOk) {
+            $serial = Join-Path $out 'qemu_serial.txt'
+            Remove-Item $serial -ErrorAction SilentlyContinue
+            $p = Start-Process -FilePath $qemuCmd.Source -ArgumentList @('-machine', 'mps2-an386', '-nographic', '-serial', 'stdio', '-monitor', 'none', '-kernel', $qelf) -RedirectStandardOutput $serial -NoNewWindow -PassThru
+            $deadline = (Get-Date).AddSeconds(25)
+            $ok = $false
+            while ((Get-Date) -lt $deadline) {
+                Start-Sleep -Milliseconds 300
+                if (Test-Path $serial) {
+                    $text = Get-Content $serial -Raw -ErrorAction SilentlyContinue
+                    if ($text -match 'ALL PASS') { $ok = $true; break }
+                    if ($text -match 'FAILED') { break }
+                }
+                if ($p.HasExited) { break }
+            }
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+            $tail = ''
+            if (Test-Path $serial) {
+                $tail = ((Get-Content $serial | Select-Object -Last 4) -join ' | ')
+            }
+            if ($ok) {
+                Write-Host "  QEMU embedded check: PASS ($tail)"
+            } else {
+                Write-Host "  QEMU embedded check: FAILED ($tail)"
+                $script:failures++
+            }
+        } else {
+            Write-Host '  QEMU check: build failed'
+            $script:failures++
         }
     }
 }
