@@ -1736,9 +1736,15 @@ void derive_write(format_context &ctx, const format_specs &specs, const T &value
     derive_write_positional(value, ctx);     // 内层没声明 → 位置式递归
   } else {
 #if EFMT_DERIVE_STRICT
-    static_assert(is_builtin_type<D>::value || has_formatter_specialization_v<D>,
-                  "成员类型没有格式化器：给它加 E_FMT_DERIVE(...)，或写一个 formatter<> "
-                  "（Rust 里相当于这个类型没实现 Debug）。"
+    // 白名单式检查（只认内置 + 显式 formatter<> 特化）会误杀走 default_formatter
+    // 偏特化的容器/流式类型：它们有自己的通道，无需特化。这里改成"漏注册检测"——
+    // 只拦【带字段的聚合体】和【未注册的枚举】，与 default_formatter 主模板
+    // （format_traits.hpp）里的检查同构。
+    static_assert(!(std::is_aggregate<D>::value && aggregate_field_count<D>() > 0) &&
+                      !std::is_enum<D>::value,
+                  "成员类型没有格式化器：带字段的聚合体多半是忘记注册或宏写错了作用域"
+                  "（请用 E_FMT_DERIVE(...) 或类型内 E_FMT_FIELDS(...)），枚举请用 "
+                  "E_FMT_FORMATTER_ENUM。容器类型走通用迭代器通道，无需特化。"
                   "也可以定义 EFMT_DERIVE_STRICT=0 退回打印地址。");
 #endif
     formatter<D>::format(ctx, specs, value);
