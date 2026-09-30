@@ -608,6 +608,57 @@ eserde::field_at<0>(p) = 30;            // 按索引写回（反序列化用；c
 全部 `constexpr`：能直接写进 `static_assert`，运行时零开销。标签只在被查询时才参与编译，
 不用标签的类型没有额外 Flash 成本。裁剪开关见 5.4 末尾的"输出与体积开关"表。
 
+### 5.7 序列化：`eserde::json`（可选，构建在基座上）
+
+把注册过的类型在 JSON 文本和对象之间来回搬。**零第三方库、零异常、零动态分配**
+（宿主的 `to_string` 除外），嵌入式与宿主同一套代码。
+
+```cpp
+#include <eserde/json.hpp>
+
+char buf[256];
+const std::size_t need = eserde::json::write_to(buf, sizeof(buf), p);   // snprintf 语义
+// need > sizeof(buf) 表示被截断；buf == nullptr 时只量长度不写
+
+person q{};
+eserde::json::error e = eserde::json::read_from(buf, q);
+if (e != eserde::json::error::ok) { /* eserde::json::error_name(e) 看原因 */ }
+
+#if EFMT_ENABLE_DYNAMIC_STRING
+const std::string text = eserde::json::to_string(p);      // 宿主便利版（嵌入式没有 std::string）
+#endif
+```
+
+映射规则：
+
+| C++ | JSON | 说明 |
+|-----|------|------|
+| 各种整数 / `bool` / `float` / `double` | 数字 / `true` `false` | NaN、Inf 写成 `null` |
+| `const char*` / `char[N]` / `std::string` / `etl::string<N>` | 字符串 | 转义、`\uXXXX`（含代理对）都处理 |
+| 注册过的枚举 | 取值名字符串 | 认不出的取值写底层整数；读回来写名字或数字都收 |
+| 注册过的结构体 | 对象 | 递归解析；嵌套深度上限 `ESERDE_JSON_MAX_DEPTH`（默认 8） |
+| C 数组 / `std::vector` / `etl::vector` / `std::array` | 数组 | 只看 `begin/end/clear/push_back` —— std 与 ETL 通吃，无需特化 |
+| 其它裸指针 | `null` | JSON 里没有指针 |
+
+字段标签复用 `[[efmt::arg(...)]]`：
+
+```cpp
+E_FMT_DERIVE(struct cfg {
+  [[efmt::arg(json = "user_name")]] std::string name;   // JSON 键名改成 user_name
+  [[efmt::arg(json = "skip")]]      int internal;       // 不进 JSON，也不从 JSON 读
+});
+```
+
+读的语义（逐条钉在 `tests/eserde_json_check.cpp`）：
+
+- **失败不动原对象**：先在副本上解析，全部成功才赋回 —— 不做"改一半"的破坏性写入
+- **没写的字段 / 写成 `null` 的字段保持原值**（配置合并语义）
+- **装不下就报 `truncated`，绝不静默截断**：`etl::string<8>` 喂 9 个字符、
+  `etl::vector<int, 4>` 喂 5 个元素、`signed char` 喂 300 —— 都是 `truncated`
+- 认不出的键**跳过**（前向兼容）；值类型不对是 `type_mismatch`；JSON 本身坏了是 `syntax`
+- 错误码：`ok / syntax / type_mismatch / truncated / too_deep / unsupported`，
+  `error_name()` 给字符串 —— **不抛异常**
+
 ---
 
 ## 6. 输出与打印
@@ -1498,6 +1549,11 @@ eserde::has_cap_v<T, Serialize>   eserde::field_count<T>()   eserde::field_name<
 eserde::tag<T>(i, k)   eserde::find_by_tag<T>("short")   eserde::visit_fields(obj, vis)
 eserde::field_at<I>(obj)                                       // 基座，见 5.6
 
+eserde::json::write_to(buf, size, obj)   // 返回所需长度（snprintf 语义）
+eserde::json::to_string(obj)             // 宿主：EFMT_ENABLE_DYNAMIC_STRING
+eserde::json::read_from(text, obj)       // 返回 error；失败不动 obj
+eserde::json::error_name(e)              // 错误码 → 字符串
+
 E_FMT_FIELDS(m1, m2, ...)                   // 类型内一行：只列名字（#if/模板/超上限时用）
 E_FMT_FORMATTER_FIELDS(Type, m1, m2, ...)   // 只列字段名（≤12），名字自动转字符串
 E_FMT_FORMATTER_AUTO(Type)                  // 简单聚合体：字段全自动
@@ -1621,6 +1677,8 @@ g++ -std=c++17 -O2 -Itests/include -DEFMT_USE_LIBC_PRINTF=0 -DEFMT_FLOAT_CHECK_I
 | `EFMT_DERIVE_ENABLE_SCHEMA` | 1 | 是否生成 schema 原料 | `eserde` 依赖；不用就设 0 |
 | `EFMT_DERIVE_ENABLE_TAGS` | 1 | 是否解析字段标签 | 设 0 后标签查询恒为空 |
 | `EFMT_DERIVE_MAX_TAGS` | 8 | 单字段标签个数上限 | 标签多时调大 |
+| `ESERDE_JSON_MAX_KEY` | 64 | JSON 键名 / 枚举名缓冲 | 键名或取值名更长时调大（超了报 truncated） |
+| `ESERDE_JSON_MAX_DEPTH` | 8 | 反序列化嵌套深度上限 | 嵌套更深时调大（栈开销随之增加） |
 | `EFMT_MAX_FORMAT_ARGS` | 16 / 8 | 每次调用栈 = 24 B × N | `=4` 省 96 B 栈 |
 | `EFMT_PRINT_BUFFER_SIZE` | 256 / 256 | `print/println` 单行上限 | `=128` 省 128 B 栈 |
 | `EFMT_STRING_BUFFER_SIZE` | 256 | `format()` 是否需要二次分配 | 宿主调优 |
@@ -1682,8 +1740,13 @@ g++ -std=c++17 -O2 -Itests/include -DEFMT_USE_LIBC_PRINTF=0 -DEFMT_FLOAT_CHECK_I
     不 include 它时 efmt 体积与行为一字不变；序列化本体留给你在此基座上另写文件
   - 裁剪开关：`EFMT_DERIVE_ENABLE_CAPS` / `EFMT_DERIVE_ENABLE_SCHEMA` /
     `EFMT_DERIVE_ENABLE_TAGS` / `EFMT_DERIVE_MAX_TAGS`（默认 1 / 1 / 1 / 8）
+  - **`eserde::json`**：JSON 序列化 / 反序列化（零第三方、零异常、零动态分配）——
+    `write_to`（snprintf 语义）/ `to_string`（宿主）/ `read_from`（失败不动原对象，
+    返回错误码）；字段标签 `json = "别名"` 改键名、`json = "skip"` 跳过；
+    std 与 ETL 容器走同一套代码；裁剪开关 `ESERDE_JSON_MAX_KEY` / `ESERDE_JSON_MAX_DEPTH`
   - 测试：`tests/efmt_derive_auto_check.cpp` 增加标签解析断言、
     `tests/eserde_schema_check.cpp`（宿主 / 嵌入式 / 关标签 三种配置）、
+    `tests/eserde_json_check.cpp`（宿主 / 嵌入式）、`tests/eserde_json_etl_check.cpp`（ETL 类型）、
     反例 `efmt_compile_fail_derive_commas.cpp`、`efmt_compile_fail_derive_enum.cpp`
 
 - **v1.8** elog 支持 ETL 类型

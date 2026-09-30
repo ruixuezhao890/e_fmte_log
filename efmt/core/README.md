@@ -118,6 +118,7 @@ E_FMT_DERIVE_ENUM(enum class state { idle, busy = 5, fault });
 `EFMT_DERIVE_MAX_TAGS`（8）。
 
 上层 `eserde/`（可选，与 `elog/` 平级）把声明原文变成编译期数据：`has_cap_v<T, Serialize>`、
+`eserde::json` 在此之上提供 JSON 序列化 / 反序列化（`write_to` / `read_from` / 宿主 `to_string`）、
 `field_count<T>()`、`field_name<T>(i)`、`field_type_name<T>(i)`、`tag<T>(i,k)`、
 `find_field`/`find_by_tag`、`visit_fields(obj, vis)`、`field_at<I>(obj)` —— 全 `constexpr`，
 不 include 时 efmt 体积与行为一字不变。

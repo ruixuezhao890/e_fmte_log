@@ -208,6 +208,28 @@ if (Test-Path $eserde) {
     if (Invoke-EfmtBuild 'eserde (embedded configuration)' $eserdeEmbArgs) {
         Invoke-EfmtRun 'eserde (embedded)' $eserdeEmbExe
     }
+
+    # JSON 序列化 / 反序列化（宿主 + 嵌入式）
+    $jsonExe = Join-Path $out 'eserde_json_check.exe'
+    $jsonArgs = @('-std=c++17') + $baseArgs + @("-I$root", (Join-Path $PSScriptRoot 'eserde_json_check.cpp'), '-o', $jsonExe)
+    if (Invoke-EfmtBuild 'eserde::json (serialize / parse)' $jsonArgs) {
+        Invoke-EfmtRun 'eserde::json' $jsonExe
+    }
+
+    $jsonEmbExe = Join-Path $out 'eserde_json_check_embedded.exe'
+    $jsonEmbArgs = @('-std=c++17') + $baseArgs + @('-DEFMT_ENABLE_HOSTED=0', "-I$root", (Join-Path $PSScriptRoot 'eserde_json_check.cpp'), '-o', $jsonEmbExe)
+    if (Invoke-EfmtBuild 'eserde::json (embedded configuration)' $jsonEmbArgs) {
+        Invoke-EfmtRun 'eserde::json (embedded)' $jsonEmbExe
+    }
+
+    # ETL 类型（etl::string / etl::vector）：需要 ETL 头文件
+    if ($hasEtl) {
+        $jsonEtlExe = Join-Path $out 'eserde_json_etl_check.exe'
+        $jsonEtlArgs = @('-std=c++17') + $baseArgs + @("-I$root", (Join-Path $PSScriptRoot 'eserde_json_etl_check.cpp'), '-o', $jsonEtlExe)
+        if (Invoke-EfmtBuild 'eserde::json with ETL types' $jsonEtlArgs) {
+            Invoke-EfmtRun 'eserde::json (ETL)' $jsonEtlExe
+        }
+    }
 }
 
 if ($Bench) {

@@ -19,6 +19,7 @@ UART / RTT / ITM / SD 卡 / 任意缓冲区。
 | 可裁剪 | 13 个开关宏；不打印浮点可关掉省 ~3.4 KB Flash；嵌入式默认配置开箱即用 |
 | 自定义类型 | 一行 `E_FMT_DERIVE(...)` 声明即推导字段/枚举名（对标 Rust `#[derive(Debug)]`），纯 C++17 实现；`E_FMT_DERIVE(声明, Debug, Serialize)` 的能力标签 + `[[efmt::arg(short, long)]]` 字段标签解析 |
 | 编译期基座 | `eserde/`（可选外挂，与 elog 平级）：能力查询 + schema（字段名/类型名/标签/枚举值）+ `visit_fields`/`field_at<I>`，全 `constexpr`；不 include 则零开销 |
+| JSON | `eserde::json`：`write_to`（snprintf 语义）/ `read_from`（失败不动原对象、错误码不抛异常）/ 宿主 `to_string`；零第三方、零动态分配；std 与 ETL 容器同一套代码；字段标签 `json = "别名"` 改名、`json = "skip"` 跳过 |
 | 分级日志 | ELog：trace→critical + off，多 logger 独立 sink、运行期 `set_level`，直接格式化 **ETL 类型**（`etl::string`/`vector`/`optional`/`variant` …） |
 
 ## 目录结构
@@ -30,7 +31,8 @@ efmt/                 格式化库本体（13 个头文件，无第三方依赖�
   core/format_derive.hpp  自定义类型推导（E_FMT_DERIVE / FIELDS / AUTO / ENUM）
   core/其他 *.hpp     模块按需自动包含，一般不用直接碰
 elog/elog.hpp         分级日志（构建在 EFmt 之上；需要 ETL）
-eserde/serde.hpp      编译期反射/能力基座（可选；序列化本体在它之上另写文件）
+eserde/serde.hpp      编译期反射 / 能力基座（可选层）
+eserde/json.hpp       JSON 序列化 / 反序列化（构建在 serde.hpp 上，零第三方）
 docs/EFMT-使用手册.md  完整新手手册（18 章）——新用户从这里开始
 tests/                零框架行为检查 + 浮点差分对拍 + 基准 + 编译期反例
 sandbox/              CLion 试玩工程（打开即跑，19 条自检走查）
@@ -138,6 +140,15 @@ E_FMT_DERIVE(struct person {
   [[efmt::arg(short, long)]]
   etl::string<12> name;
 }, Debug, Serialize);
+```
+
+**JSON 一行进出**（可选层 `eserde/json.hpp`，零第三方、不抛异常）：
+
+```cpp
+char buf[256];
+const size_t need = eserde::json::write_to(buf, sizeof(buf), p);   // snprintf 语义
+person q{};
+if (eserde::json::read_from(buf, q) != eserde::json::error::ok) { /* error_name() 看原因 */ }
 ```
 
 **分级日志**（需要 ETL）：
@@ -261,7 +272,8 @@ SysTick 计时（1 tick ≈ 570 条 guest 指令，同一环境标定），**确
 ```
 
 当前基线：行为检查 149 项 × 2 标准（含 `E_FMT_STR` 快路径/转义回退/显式索引用例）、
-E_FMT_DERIVE 34 项 × 2 配置、派生宏 28 项（宿主+嵌入式）、eserde 基座 6 项 × 3 配置、浮点对拍 24.6 万次 0 失败、
+E_FMT_DERIVE 34 项 × 2 配置、派生宏 28 项（宿主+嵌入式）、eserde 基座 6 项 × 3 配置、
+eserde::json 28 项 × 2 配置 + ETL 7 项、浮点对拍 24.6 万次 0 失败、
 五个编译期反例按预期失败 —— 全部通过。
 
 > 需要 ETL 才能跑 elog 相关步骤：没接 ETL 时脚本会跳过并提示（`-EtlInclude` 指定位置）。

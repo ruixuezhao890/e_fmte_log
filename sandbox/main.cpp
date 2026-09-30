@@ -14,6 +14,7 @@
 #include <middleware/efmt/core/format_output.hpp>
 #include <elog/elog.hpp>
 #include <eserde/serde.hpp>       // 可选基座：能力标签查询 + schema（efmt 本体不认识它）
+#include <eserde/json.hpp>        // JSON 序列化 / 反序列化（构建在基座上）
 
 // ETL：sandbox 显式依赖（CMakeLists.txt 的 ETL_ROOT），elog 已把 ETL 常用类型
 // 接进格式化（etl::string / etl::vector / etl::optional / etl::pair / etl::variant...）
@@ -140,6 +141,22 @@ int main() {
   eserde::visit_fields(p, [](std::string_view field, const auto &) {
     std::printf("  field %.*s\n", static_cast<int>(field.size()), field.data());
   });
+
+  // JSON：写→读一圈（eserde::json，零第三方、不抛异常）
+  char json_buf[256];
+  std::size_t json_len = eserde::json::write_to(json_buf, sizeof(json_buf), p);
+  const bool json_fits = json_len < sizeof(json_buf);
+  if (!json_fits) json_len = sizeof(json_buf) - 1;
+  println_info("json ({} B): {}", json_len, std::string_view(json_buf, json_len));
+
+  person q{};
+  const eserde::json::error je =
+      eserde::json::read_from(std::string_view(json_buf, json_len), q);
+  if (je == eserde::json::error::ok && json_fits) {
+    println_info("json round-trip: {}", q);
+  } else {
+    println_info("json round-trip skipped: {}", eserde::json::error_name(je));
+  }
 
   // elog：第一个创建的 logger 自动成为默认 logger，之后的 ELOG_* 宏都走它。
   // 创建必须发生在第一次 ELOG_* 之前，否则默认 logger 为空、日志被静默丢弃。
