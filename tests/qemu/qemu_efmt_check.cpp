@@ -102,8 +102,8 @@ static bool streq(const char *a, const char *b) {
 }
 
 // 声明即推导：结构体 + 枚举（ARM 工具链可移植性在此一并验证）
-E_FMT_DERIVE(struct imu3 { float ax, ay, az; });
-E_FMT_DERIVE(enum class state3 { idle, busy = 5, fault });
+E_FMT_DERIVE(struct imu3 { float ax; float ay; float az; });
+E_FMT_DERIVE_ENUM(enum class state3 { idle, busy = 5, fault });
 
 int main() {
   char buf[96];

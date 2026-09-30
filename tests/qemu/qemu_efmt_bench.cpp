@@ -148,11 +148,11 @@ static void c_float_big(void) {
 }
 static void c_hex8(void) { g_sink += e_fmt::format_to(g_buf, sizeof(g_buf), "{:#010x}", 0xDEADBEEF); }
 
-E_FMT_DERIVE(struct pt2 { int x, y; });
+E_FMT_DERIVE(struct pt2 { int x; int y; });
 static void c_derive_struct(void) {
   g_sink += e_fmt::format_to(g_buf, sizeof(g_buf), "{}", pt2{1, 2});
 }
-E_FMT_DERIVE(enum class color4 { red, green, blue });
+E_FMT_DERIVE_ENUM(enum class color4 { red, green, blue });
 static void c_derive_enum(void) {
   g_sink += e_fmt::format_to(g_buf, sizeof(g_buf), "{}", color4::green);
 }

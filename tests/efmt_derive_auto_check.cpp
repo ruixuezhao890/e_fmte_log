@@ -20,7 +20,9 @@ using namespace e_fmt;
 // 被测类型：全部只写声明，不写任何字段名
 // ============================================================================
 E_FMT_DERIVE(struct imu {
-  float ax, ay, az;          // 多字段声明
+  float ax;                  // 一行一个字段：宏的第一个参数是声明本身，
+  float ay;                  // 声明里的顶层逗号会把宏参数切断（枚举走 E_FMT_DERIVE_ENUM）
+  float az;
 });
 
 E_FMT_DERIVE(struct one_field {
@@ -28,7 +30,8 @@ E_FMT_DERIVE(struct one_field {
 });
 
 E_FMT_DERIVE(struct full16 {
-  int a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p;
+  int a; int b; int c; int d; int e; int f; int g; int h;
+  int i; int j; int k; int l; int m; int n; int o; int p;
 });
 
 E_FMT_DERIVE(struct with_bits {
@@ -115,14 +118,23 @@ E_FMT_DERIVE(struct with_string_member {
 });
 #endif
 
-E_FMT_DERIVE(enum class state {
+// 字段标签：属性不能把字段弄丢（旧实现里含 '(' 的语句会被当成成员函数跳过），
+// 标签要能在编译期解析出来 —— 这是 eserde 之类上层的原料。
+E_FMT_DERIVE(struct with_tags {
+  int age;
+  [[efmt::arg(short, long)]]
+  int level;
+  int extra [[maybe_unused]];
+});
+
+E_FMT_DERIVE_ENUM(enum class state {
   idle,
   busy = 5,
   fault,                     // 自增：6
   down = -2
 });
 
-E_FMT_DERIVE(enum class code : unsigned char {
+E_FMT_DERIVE_ENUM(enum class code : unsigned char {
   ok = 0,
   warn = 0x10,
   fail = 200
@@ -207,6 +219,19 @@ int main() {
   CHECK_TEXT(text("{}", with_string_member{std::string("imu"), 3}),
              "{ label = imu, count = 3 }");
 #endif
+
+  // ---- 字段标签：带属性的字段照样是字段，标签也能解析出来 ----
+  CHECK_TEXT(text("{}", with_tags{18, 3, 1}), "{ age = 18, level = 3, extra = 1 }");
+  {
+    constexpr auto s = ::e_fmt::detail::parse_derived_schema<EFMT_DERIVE_MAX_FIELDS>(
+        "struct with_tags { int age; [[efmt::arg(short, long)]] int level;"
+        " int extra [[maybe_unused]]; }");
+    static_assert(s.parsed && s.count == 3, "带属性的声明照样解析出 3 个字段");
+    static_assert(s.field(1).name == "level" && s.field(1).type_name == "int", "字段名/类型名");
+    static_assert(s.tags(1).valid && s.tags(1).count == 2, "两个标签");
+    static_assert(s.tags(1).items[0].name == "short" && s.tags(1).items[1].name == "long", "标签名");
+    static_assert(s.field(2).name == "extra" && s.field(2).has_attrs, "尾部属性不影响字段名");
+  }
 
   // ---- 样式：{:#} 多行缩进（EFMT_DERIVE_STYLE_MULTILINE 默认开）----
   CHECK_TEXT(text("{:#}", imu{1.5f, 2.5f, 3.5f}),

@@ -419,14 +419,17 @@ E_FMT_FORMATTER_FN(Packet, [](format_context& ctx, const format_specs&, const Pa
 
 ### 5.4 声明即推导：`E_FMT_DERIVE`（对标 Rust 的 `#[derive(Debug)]`）
 
-**结构体和枚举都只写声明** —— 字段名、取值名一个字都不用写：
+**结构体和枚举都只写声明** —— 字段名、取值名一个字都不用写。
+v1.9 起分成两个入口：结构体用 `E_FMT_DERIVE`，枚举用 `E_FMT_DERIVE_ENUM`（原因见下）。
 
 ```cpp
-E_FMT_DERIVE(struct imu {
-  float ax, ay, az;
+E_FMT_DERIVE(struct imu {                    // 第一个参数是声明本身
+  float ax;                                  // 声明里不能有顶层逗号 → 一行一个字段
+  float ay;
+  float az;
 });
 
-E_FMT_DERIVE(enum class state {
+E_FMT_DERIVE_ENUM(enum class state {         // 枚举：整段声明一起进去
   idle,
   busy = 5,
   fault
@@ -434,6 +437,22 @@ E_FMT_DERIVE(enum class state {
 
 println_info("{}", imu{1.5f, 2.5f, 3.5f});   // { ax = 1.5, ay = 2.5, az = 3.5 }
 println_info("{}", state::busy);             // busy
+```
+
+**为什么枚举要单独一个宏**：预处理器只把圆括号当保护，**花括号不算** —— 枚举体的逗号是顶层
+逗号，`E_FMT_DERIVE(enum class state { idle, busy = 5, fault })` 会被切成三段，宏拼不回声明。
+结构体字段用 `;` 分隔所以没事，但一行多字段（`int x, y;`）同样会被切断 → 一行一个即可；
+类型名里带逗号的（`std::pair<int, int>`）先 `typedef` 消掉。报错信息会把这三条直接写出来。
+
+**能力标签（v1.9）**：声明之后的参数都是能力标签，efmt 原样登记、不解释含义 ——
+`Debug`（打印）由 efmt 提供且默认就有，`Serialize` 之类由上层 `eserde` 定义（见 5.6）：
+
+```cpp
+E_FMT_DERIVE(struct person {
+  int age;
+  [[efmt::arg(short, long)]]      // 字段标签：efmt 只解析，上层（eserde）按它生成代码
+  etl::string<12> name;
+}, Debug, Serialize);             // 能力标签：可省略
 ```
 
 嵌套、数组、位域、默认值、静态成员、成员函数、函数指针、命名空间，全都只用写声明：
@@ -472,6 +491,11 @@ E_FMT_DERIVE(struct frame {
 | 模板结构体 | ✗ | 同上 |
 | 基类 / 私有成员 | ✗ | 结构化绑定本身就不支持 |
 | 超过 `EFMT_DERIVE_MAX_FIELDS`（默认 16） | ✗ | 调大宏或改用其它写法 |
+| 声明里有**顶层逗号**（`int x, y;`） | ✗ | 预处理器按顶层逗号切参数 → 字段拆成一行一个 |
+| 类型名里带逗号（`std::pair<int, int>`） | ✗ | 先 `typedef` 消掉逗号再推导 |
+| 枚举（`enum class`） | ✗ | 用 `E_FMT_DERIVE_ENUM(整段声明)`；枚举体的逗号是顶层逗号 |
+| 字段带 `[[efmt::arg(...)]]` 标签 | ✓ | 写在声明**前面**或**后面**都行；夹在中间会报错（不猜） |
+| 枚举取值带标签 | ✓ | `busy = 5 [[efmt::arg(alias = "run")]]` —— 只能写在名字**后面**（C++ 语法不允许取值名前挂属性） |
 
 **兜底写法一：类型里写一行 `E_FMT_FIELDS`**（已有类型、需要 `#if`、模板结构体、超过上限时用它）
 
@@ -513,6 +537,10 @@ struct box {
 | `EFMT_DERIVE_MAX_FIELDS` | 16 | 单类型字段/取值上限 |
 | `EFMT_DERIVE_MAX_ARRAY_ITEMS` | 8 | 数组成员最多打几个元素，超出 `...` |
 | `EFMT_DERIVE_STRICT` | 1 | 成员没有格式化器 → 编译报错（Rust 行为）；设 0 退回 `obj@地址` |
+| `EFMT_DERIVE_ENABLE_CAPS` | 1 | 登记能力标签（`E_FMT_DERIVE(decl, Debug, Serialize)` 里的标签）；不用能力系统就设 0 |
+| `EFMT_DERIVE_ENABLE_SCHEMA` | 1 | 生成 schema 原料（`efmt_derive_decl`）；`eserde` 依赖它，不用就设 0 |
+| `EFMT_DERIVE_ENABLE_TAGS` | 1 | 解析 `[[efmt::arg(...)]]` 字段标签；设 0 后标签查询恒为空（字段名照常） |
+| `EFMT_DERIVE_MAX_TAGS` | 8 | 单个字段/取值的标签个数上限 |
 ### 5.5 容器与 tuple（默认只在宿主可用）
 
 ```cpp
@@ -535,6 +563,50 @@ format("{}", std::make_pair("k", 7));           // "(k: 7)"
 > 实测（Cortex-M4 `-Os`）：容器宏开着但不用容器 = **零 Flash 开销**（模板惰性
 > 实例化）；真的打一个 `etl::vector<int,8>` 才 +260 B。因此 elog 默认打开它没有
 > 隐性成本。
+
+### 5.6 基座：`eserde`（能力标签 / schema / 字段访问）
+
+`eserde` 是 efmt 的**可选外挂层**（与 `elog/` 平级，`#include <eserde/serde.hpp>`，
+只 include 仓库根目录）。它把 `E_FMT_DERIVE` 生成的**声明原文**变成编译期可查的数据，
+自己不产生任何行为代码 —— 序列化（JSON / 二进制协议 / CLI）由你在它上面另写文件实现。
+不 include 它时，efmt 的体积与行为一字不变。
+
+```cpp
+#include <middleware/efmt/core/format.hpp>
+#include <eserde/serde.hpp>
+using namespace e_fmt;
+using namespace eserde;
+
+E_FMT_DERIVE(struct person {
+  int age;
+  [[efmt::arg(short, long)]]
+  etl::string<12> name;
+}, Debug, Serialize);
+
+static_assert(eserde::has_cap_v<person, Serialize>);                     // 能力标签
+static_assert(eserde::field_count<person>() == 2);                       // schema
+static_assert(eserde::field_name<person>(1) == "name");
+static_assert(eserde::field_type_name<person>(1) == "etl::string<12>");  // 纯文本
+static_assert(eserde::find_by_tag<person>("short") == 1);                // [[efmt::arg(short, long)]]
+
+person p{18, etl::string<12>("bob")};
+eserde::visit_fields(p, [](std::string_view name, const auto &value) { /* 按声明顺序遍历 */ });
+eserde::field_at<0>(p) = 30;            // 按索引写回（反序列化用；const 对象只读）
+```
+
+| 接口 | 作用 |
+|------|------|
+| `is_registered_v<T>` | 类型是否用 `E_FMT_DERIVE` / `E_FMT_DERIVE_ENUM` 注册过 |
+| `has_cap_v<T, Cap>` | 能力标签查询；注册过的类型默认有 `Debug` |
+| `field_count<T>()` / `field_name<T>(i)` | 字段数 / 字段名（枚举 = 取值名） |
+| `field_type_name<T>(i)` | 字段类型名（声明原文，纯文本，不能拿来推导 C++ 类型） |
+| `enum_value<T>(i)` | 枚举取值的数值 |
+| `tag_count<T>(i)` / `tag<T>(i, k)` / `has_tag<T>(i, "short")` | 字段标签（`[[efmt::arg(...)]]`） |
+| `find_field<T>("name")` / `find_by_tag<T>("short")` | 反查下标；找不到 = `eserde::npos` |
+| `visit_fields(obj, vis)` / `field_at<I>(obj)` | 按声明顺序遍历 / 按索引读写成员 |
+
+全部 `constexpr`：能直接写进 `static_assert`，运行时零开销。标签只在被查询时才参与编译，
+不用标签的类型没有额外 Flash 成本。裁剪开关见 5.4 末尾的"输出与体积开关"表。
 
 ---
 
@@ -747,7 +819,7 @@ static_assert(!EFMT_ENABLE_ANSI_STYLES, "嵌入式不要往串口发转义序列
 |------|-----------|----------------|
 | 默认（含自带浮点，完整功能测试） | 8340 B text / 108 data / 48 bss | 9359 B / 20 / 56 |
 | 最小裁剪（无浮点、4 参数、无容器） | **3960 B** | **5150 B** |
-| derive 样例（`E_FMT_DERIVE` × 3，见 8.2b） | 8376 B / 108 / 44 | 8719 B / 20 / 52 |
+| derive 样例（`E_FMT_DERIVE` × 3，见 8.2b） | 8380 B / 108 / 44 | 8727 B / 20 / 52 |
 
 要点：
 
@@ -769,6 +841,9 @@ static_assert(!EFMT_ENABLE_ANSI_STYLES, "嵌入式不要往串口发转义序列
 | **`E_FMT_DERIVE(struct imu { … });`（默认）** | **6692 B** | **+144 B** |
 | `E_FMT_DERIVE` + `EFMT_DERIVE_SHOW_TYPE=1`（带类型名） | 8044 B | +1496 B |
 | 嵌套两个类型：老宏 7728 B / `E_FMT_DERIVE` 8080 B | | +352 B |
+
+> 上表是 v1.6 的原始读数。v1.9 改成"能力标签"接口后同一份样例实测 **8380 B**（xtensa **8727 B**），
+> 即整体 **+4 B（xtensa +8 B）**；裁剪开关全关（`EFMT_DERIVE_ENABLE_CAPS=0`、`_SCHEMA=0`）可回到原读数。
 
 结论：**推导的代价是每个类型约 40~90 B**（字段越多越接近上限；换来字段名与类型名零手写、
 漏字段编译报错），而"输出带类型名"这一项单独就要 1.35 KB —— 所以默认关
@@ -1070,6 +1145,16 @@ E_FMT_FORMATTER_FN(Rgb, [](format_context& ctx, const format_specs&, const Rgb& 
 **Q26：`E_FMT_DERIVE` 打出来没有类型名？**
 默认关（`EFMT_DERIVE_SHOW_TYPE=0`），输出 `{ ax = 1.5 }`，比带类型名省 **1.35 KB Flash**
 （Cortex-M4 实测）。想要 Rust 那种 `imu { ax = 1.5 }` 就设 `EFMT_DERIVE_SHOW_TYPE=1`。
+
+**Q26b：`E_FMT_DERIVE(struct X { int a, b; });` 报"第一个参数只能是【声明本身】"？**
+预处理器在展开前就按**顶层逗号**切参数，而花括号不保护逗号 —— `int a, b;` 会被切成两段。
+把字段拆成一行一个即可；`std::pair<int, int>` 这类类型名里带逗号的先 `typedef` 消掉；
+枚举（整个枚举体的逗号都是顶层逗号）请改用 `E_FMT_DERIVE_ENUM(...)`。
+
+**Q26c：`[[efmt::arg(short, long)]]` 标签会改变打印吗？**
+不会。标签是给上层看的**编译期元数据**，efmt 只负责解析，`{}` 输出仍是字段名（`name = ...`）。
+用 `eserde`（见 5.6）可以按标签反查字段：`eserde::find_by_tag<T>("short")`。
+标签写在字段声明前或后都行；夹在中间会编译报错（不猜）。
 
 **Q27：为什么位域也能打对？`std::tie` 不是有坑吗？**
 有坑：GCC 下 `std::tie` 绑位域会拿到**未初始化的临时量**（实测打印 0）。EFmt 的推导路径
@@ -1404,8 +1489,14 @@ namespace detail { class output_handler_scope { ... }; }  // RAII 临时改道
 // 老写法 E_FMT_FORMATTER_1/2/3 已删除（抄"类型+成员名+显示名"三遍）；要"只列字段名"用下面的 FORMATTER_FIELDS
 E_FMT_FORMATTER_FN(Type, lambda)                 // 完全自定义输出（最灵活）
 
-E_FMT_DERIVE(struct imu { float ax, ay, az; });   // 声明即推导（推荐）
-E_FMT_DERIVE(enum class state { idle, busy = 5, fault });
+E_FMT_DERIVE(struct imu { float ax; float ay; float az; });   // 结构体（一行一个字段）
+E_FMT_DERIVE_ENUM(enum class state { idle, busy = 5, fault }); // 枚举（整段声明）
+E_FMT_DERIVE(struct person { int age; [[efmt::arg(short)]] etl::string<12> name; },
+             Debug, Serialize);                                // 字段标签 + 能力标签
+
+eserde::has_cap_v<T, Serialize>   eserde::field_count<T>()   eserde::field_name<T>(i)
+eserde::tag<T>(i, k)   eserde::find_by_tag<T>("short")   eserde::visit_fields(obj, vis)
+eserde::field_at<I>(obj)                                       // 基座，见 5.6
 
 E_FMT_FIELDS(m1, m2, ...)                   // 类型内一行：只列名字（#if/模板/超上限时用）
 E_FMT_FORMATTER_FIELDS(Type, m1, m2, ...)   // 只列字段名（≤12），名字自动转字符串
@@ -1443,7 +1534,7 @@ detail::styles::error() / warning() / info() / success() / debug() / muted() / h
 ### 15.1 一键跑全部检查
 
 ```powershell
-.\tests\run_check.ps1                    # 宿主 C++17/C++20 + 嵌入式 + 最小裁剪 + 反例 + elog
+.\tests\run_check.ps1                    # 宿主 C++17/C++20 + 嵌入式 + 最小裁剪 + 反例 + elog + eserde
 .\tests\run_check.ps1 -Bench             # 额外跑微基准（libc 浮点 / 自带浮点各一轮）
 .\tests\run_check.ps1 -Size              # 额外交叉编译量 Flash/RAM（需要 arm-none-eabi-g++ 等）
 .\tests\run_check.ps1 -Qemu              # 额外在 QEMU（mps2-an386，Cortex-M4）里真实运行嵌入式行为检查
@@ -1526,6 +1617,10 @@ g++ -std=c++17 -O2 -Itests/include -DEFMT_USE_LIBC_PRINTF=0 -DEFMT_FLOAT_CHECK_I
 | `EFMT_DERIVE_MAX_FIELDS` | 16 | 单类型字段/取值上限 | 更大结构体时调大 |
 | `EFMT_DERIVE_MAX_ARRAY_ITEMS` | 8 | 数组成员最多打几个 | 缓冲区想全打就调大 |
 | `EFMT_DERIVE_STRICT` | 1 | 成员缺格式化器即编译错误 | 设 0 退回 `obj@地址` |
+| `EFMT_DERIVE_ENABLE_CAPS` | 1 | 是否登记能力标签 | 不用能力系统就设 0 |
+| `EFMT_DERIVE_ENABLE_SCHEMA` | 1 | 是否生成 schema 原料 | `eserde` 依赖；不用就设 0 |
+| `EFMT_DERIVE_ENABLE_TAGS` | 1 | 是否解析字段标签 | 设 0 后标签查询恒为空 |
+| `EFMT_DERIVE_MAX_TAGS` | 8 | 单字段标签个数上限 | 标签多时调大 |
 | `EFMT_MAX_FORMAT_ARGS` | 16 / 8 | 每次调用栈 = 24 B × N | `=4` 省 96 B 栈 |
 | `EFMT_PRINT_BUFFER_SIZE` | 256 / 256 | `print/println` 单行上限 | `=128` 省 128 B 栈 |
 | `EFMT_STRING_BUFFER_SIZE` | 256 | `format()` 是否需要二次分配 | 宿主调优 |
@@ -1569,7 +1664,29 @@ g++ -std=c++17 -O2 -Itests/include -DEFMT_USE_LIBC_PRINTF=0 -DEFMT_FLOAT_CHECK_I
 
 ---
 
-- **v1.8** elog 支持 ETL 类型（本版）
+- **v1.9** `E_FMT_DERIVE` 带能力标签 + 字段标签解析 + `eserde` 基座（本版）
+  - 接口：**`E_FMT_DERIVE(声明, 能力...)`** —— 第一个参数是声明本身，其后都是能力标签
+    （`E_FMT_DERIVE(struct person { ... }, Debug, Serialize)`）。声明里不能有顶层逗号
+    （预处理器按顶层逗号切参数），字段一行一个；类型名带逗号的先 `typedef`；
+    报错信息把三种情况直接写清楚，并各配一条反例测试
+  - 枚举改用 **`E_FMT_DERIVE_ENUM(enum class state { idle, busy = 5, fault })`**：
+    枚举体的逗号是顶层逗号，`E_FMT_DERIVE` 拼不回声明（一行一个也不行）
+  - **字段标签**：`[[efmt::arg(short, long)]]` / `[[efmt::arg(long, help = "…")]]` 写在
+    字段前或后，编译期解析成 `{name, value, has_value}`；属性夹在声明中间会报错（不猜）。
+    顺带修掉"带属性的字段被整条当成员函数丢掉"的老 bug。GCC 对未知属性的
+    `-Wattributes` 告警由宏内 `_Pragma` 局部静音，用户不需要改编译开关
+  - **能力标签**：`Debug` 由 efmt 提供（打印，默认），其余原样登记成 `caps_list<...>`，
+    efmt 不解释含义、不产生任何代码
+  - **`eserde/`（与 elog 平级的外挂层）**：能力查询 + schema（字段名 / 类型名文本 / 标签 /
+    枚举取值）+ `visit_fields` / `field_at<I>` 按索引访问成员，全部 `constexpr`。
+    不 include 它时 efmt 体积与行为一字不变；序列化本体留给你在此基座上另写文件
+  - 裁剪开关：`EFMT_DERIVE_ENABLE_CAPS` / `EFMT_DERIVE_ENABLE_SCHEMA` /
+    `EFMT_DERIVE_ENABLE_TAGS` / `EFMT_DERIVE_MAX_TAGS`（默认 1 / 1 / 1 / 8）
+  - 测试：`tests/efmt_derive_auto_check.cpp` 增加标签解析断言、
+    `tests/eserde_schema_check.cpp`（宿主 / 嵌入式 / 关标签 三种配置）、
+    反例 `efmt_compile_fail_derive_commas.cpp`、`efmt_compile_fail_derive_enum.cpp`
+
+- **v1.8** elog 支持 ETL 类型
   - elog 层新增 ETL 类型格式化：`etl::string<N>` / `etl::istring` / `etl::string_view`
     → 文本（格式规范全支持）、`etl::optional` → 值或 `nullopt`、`etl::pair` → `(a: b)`、
     `etl::variant` → 当前活跃值（C++17）；ETL 容器（vector/map/list/deque/set/span/array/
@@ -1591,7 +1708,8 @@ g++ -std=c++17 -O2 -Itests/include -DEFMT_USE_LIBC_PRINTF=0 -DEFMT_FLOAT_CHECK_I
     想保留旧的地址输出就定义 `EFMT_DERIVE_STRICT=0`
   - 新增反例测试 `tests/efmt_compile_fail_derive_scope.cpp`
 - **v1.6** `E_FMT_DERIVE`：声明即推导（真正的 Rust `#[derive(Debug)]` 体验）
-  - **一个宏管结构体和枚举**，字段名/取值名一个字都不用写：
+  - **一个宏管结构体和枚举**，字段名/取值名一个字都不用写（下面是 v1.6 当时的写法；
+    v1.9 起结构体要用"一行一个字段"且枚举改用 `E_FMT_DERIVE_ENUM`）：
     `E_FMT_DERIVE(struct imu { float ax, ay, az; });` → `{ ax = 1.5, ay = 2.5, az = 3.5 }`、
     `E_FMT_DERIVE(enum class state { idle, busy = 5 });` → `busy`
   - 机制全部纯 C++17：`extern` + `decltype` 抓类型、`#__VA_ARGS__` 编译期解析声明文本、

@@ -92,6 +92,38 @@ docs/                 使用手册
 
 ---
 
+## v1.9 `E_FMT_DERIVE` 带能力标签 + 字段标签 + `eserde` 基座
+
+接口变成 **`E_FMT_DERIVE(声明, 能力...)`**：第一个参数是声明本身，其后都是能力标签
+（efmt 原样登记、不解释含义）：
+
+```cpp
+E_FMT_DERIVE(struct person {
+  int age;
+  [[efmt::arg(short, long)]]      // 字段标签：编译期解析成 {name, value, has_value}
+  etl::string<12> name;
+}, Debug, Serialize);             // 能力标签：Debug 由 efmt 提供（打印，默认）
+```
+
+**声明里不能有顶层逗号**（预处理器只把圆括号当保护，花括号不算）：一行多字段请拆行，
+类型名带逗号的先 `typedef`。枚举的逗号天然是顶层逗号，所以走专用入口：
+
+```cpp
+E_FMT_DERIVE_ENUM(enum class state { idle, busy = 5, fault });
+```
+
+越界用法由 static_assert 直接讲清楚（`tests/efmt_compile_fail_derive_commas.cpp` /
+`_enum.cpp` 钉住）；GCC 对未知属性 `[[efmt::arg(...)]]` 的 `-Wattributes` 告警由宏内
+`_Pragma` 局部静音。裁剪开关：`EFMT_DERIVE_ENABLE_CAPS` / `_SCHEMA` / `_TAGS`（各默认 1）、
+`EFMT_DERIVE_MAX_TAGS`（8）。
+
+上层 `eserde/`（可选，与 `elog/` 平级）把声明原文变成编译期数据：`has_cap_v<T, Serialize>`、
+`field_count<T>()`、`field_name<T>(i)`、`field_type_name<T>(i)`、`tag<T>(i,k)`、
+`find_field`/`find_by_tag`、`visit_fields(obj, vis)`、`field_at<I>(obj)` —— 全 `constexpr`，
+不 include 时 efmt 体积与行为一字不变。
+
+---
+
 ## v1.7 修掉"宏写错作用域静默失效"
 
 `E_FMT_FORMATTER_FIELDS` / `_ENUM` / `_AUTO` / `_AUTO_N` 靠在**类型所在命名空间**里发 ADL 函数生效。

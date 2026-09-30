@@ -49,6 +49,9 @@ cmake --build build
 | `EFMT_ENABLE_DYNAMIC_STRING` | 宿主 1 | 0 = 不支持 std::string 参数 |
 | `EFMT_ENABLE_ANSI_STYLES` | 宿主 1 | 颜色转义（`main.cpp` 里已关成 0） |
 | `EFMT_DERIVE_STYLE_MULTILINE` | 1 | `{:#}` 多行缩进；关它省 ~15 B，`{:#}` 退化为单行 |
+| `EFMT_DERIVE_ENABLE_CAPS` | 1 | 0 = 不登记能力标签（`E_FMT_DERIVE(decl, Debug, Serialize)` 的标签位） |
+| `EFMT_DERIVE_ENABLE_SCHEMA` | 1 | 0 = 不生成 schema 原料（`eserde` 依赖它） |
+| `EFMT_DERIVE_ENABLE_TAGS` | 1 | 0 = 不解析 `[[efmt::arg(...)]]` 字段标签 |
 | `ELOG_MAX_RECORD_SIZE` | 384 | 单条日志的记录缓冲 |
 | `ELOG_MAX_LOGGERS` | 8 | logger 槽位数 |
 

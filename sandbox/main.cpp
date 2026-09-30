@@ -13,6 +13,7 @@
 #include <middleware/efmt/core/format.hpp>
 #include <middleware/efmt/core/format_output.hpp>
 #include <elog/elog.hpp>
+#include <eserde/serde.hpp>       // 可选基座：能力标签查询 + schema（efmt 本体不认识它）
 
 // ETL：sandbox 显式依赖（CMakeLists.txt 的 ETL_ROOT），elog 已把 ETL 常用类型
 // 接进格式化（etl::string / etl::vector / etl::optional / etl::pair / etl::variant...）
@@ -27,6 +28,7 @@
 #include <vector>
 
 using namespace e_fmt;
+using namespace eserde;
 
 // ============================================================================
 // 自定义类型：四种注册写法
@@ -52,16 +54,17 @@ E_FMT_DERIVE(struct frame {             // ④ 声明即推导：结构体 / 枚
   unsigned ts;
 });
 
-E_FMT_DERIVE(enum class state { idle, sampling, fault });
+E_FMT_DERIVE_ENUM(enum class state { idle, sampling, fault });   // 枚举走专用入口（枚举体的逗号是顶层逗号）
 
 
-E_FMT_DERIVE(struct person {
-  int age;
+E_FMT_DERIVE(struct person {              // ⑤ 声明即推导 + 字段标签 + 能力标签
+  int age;                                //    名字照样一个都不用写
   float weight;
   float high;
+  [[efmt::arg(short, long)]]              //    字段标签：efmt 只解析，eserde 之类上层来查
   std::string name;
   state state;
-});
+}, Debug, Serialize);                     //    能力标签：原样登记，efmt 本体只认 Debug
 
 
 // ============================================================================
@@ -126,6 +129,17 @@ int main() {
 
   println_info("person info {}",p);
   print_info("person info {:#}", p);
+
+  // 基座：声明原文 → 编译期数据（能力标签 / schema / 字段标签）
+  static_assert(eserde::has_cap_v<person, Serialize>, "person 带了 Serialize 能力标签");
+  static_assert(eserde::find_by_tag<person>("short") == 3, "name 字段带 short 标签");
+  println_info("schema: {} 个字段；字段 3 的类型名 = {}，标签数 = {}",
+               eserde::field_count<person>(),
+               eserde::field_type_name<person>(3),
+               eserde::tag_count<person>(3));
+  eserde::visit_fields(p, [](std::string_view field, const auto &) {
+    std::printf("  field %.*s\n", static_cast<int>(field.size()), field.data());
+  });
 
   // elog：第一个创建的 logger 自动成为默认 logger，之后的 ELOG_* 宏都走它。
   // 创建必须发生在第一次 ELOG_* 之前，否则默认 logger 为空、日志被静默丢弃。

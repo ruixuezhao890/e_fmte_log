@@ -17,7 +17,8 @@ UART / RTT / ITM / SD 卡 / 任意缓冲区。
 | 输出路由 | 一个 `(const char*, size_t)` 回调：UART / RTT / ITM / SD / 缓冲区 / stdout 均可 |
 | 自带浮点引擎 | 不依赖 libc printf、不用堆；与 printf **逐位一致**（24.6 万次随机差分对拍 0 失败），比 libc 快 40%+ |
 | 可裁剪 | 13 个开关宏；不打印浮点可关掉省 ~3.4 KB Flash；嵌入式默认配置开箱即用 |
-| 自定义类型 | 一行 `E_FMT_DERIVE(...)` 声明即推导字段/枚举名（对标 Rust `#[derive(Debug)]`），纯 C++17 实现 |
+| 自定义类型 | 一行 `E_FMT_DERIVE(...)` 声明即推导字段/枚举名（对标 Rust `#[derive(Debug)]`），纯 C++17 实现；`E_FMT_DERIVE(声明, Debug, Serialize)` 的能力标签 + `[[efmt::arg(short, long)]]` 字段标签解析 |
+| 编译期基座 | `eserde/`（可选外挂，与 elog 平级）：能力查询 + schema（字段名/类型名/标签/枚举值）+ `visit_fields`/`field_at<I>`，全 `constexpr`；不 include 则零开销 |
 | 分级日志 | ELog：trace→critical + off，多 logger 独立 sink、运行期 `set_level`，直接格式化 **ETL 类型**（`etl::string`/`vector`/`optional`/`variant` …） |
 
 ## 目录结构
@@ -29,6 +30,7 @@ efmt/                 格式化库本体（13 个头文件，无第三方依赖�
   core/format_derive.hpp  自定义类型推导（E_FMT_DERIVE / FIELDS / AUTO / ENUM）
   core/其他 *.hpp     模块按需自动包含，一般不用直接碰
 elog/elog.hpp         分级日志（构建在 EFmt 之上；需要 ETL）
+eserde/serde.hpp      编译期反射/能力基座（可选；序列化本体在它之上另写文件）
 docs/EFMT-使用手册.md  完整新手手册（18 章）——新用户从这里开始
 tests/                零框架行为检查 + 浮点差分对拍 + 基准 + 编译期反例
 sandbox/              CLion 试玩工程（打开即跑，19 条自检走查）
@@ -122,13 +124,20 @@ int main() {
 }
 ```
 
-**自定义类型一行推导**（结构体、枚举都行，字段名/取值名自动生成）：
+**自定义类型一行推导**（字段名/取值名自动生成；结构体与枚举各一个入口）：
 
 ```cpp
-E_FMT_DERIVE(struct imu { float ax, ay, az; });
-E_FMT_DERIVE(enum class state { idle, busy = 5 });
+E_FMT_DERIVE(struct imu { float ax; float ay; float az; });     // 结构体：一行一个字段
+E_FMT_DERIVE_ENUM(enum class state { idle, busy = 5 });         // 枚举：整段声明
 println_info("{}", imu{1.5f, 2.5f, 3.5f});   // { ax = 1.5, ay = 2.5, az = 3.5 }
 println_info("{}", state::busy);            // busy
+
+// 字段标签 + 能力标签（v1.9）：efmt 只解析/登记，上层 eserde 按它生成序列化等代码
+E_FMT_DERIVE(struct person {
+  int age;
+  [[efmt::arg(short, long)]]
+  etl::string<12> name;
+}, Debug, Serialize);
 ```
 
 **分级日志**（需要 ETL）：
@@ -160,6 +169,8 @@ Windows / Linux / **ESP-IDF 走宿主配置**（容器、std::string、ANSI、st
 | `EFMT_ENABLE_ANSI_STYLES` | 0 | ANSI 颜色字节 |
 | `EFMT_PRINT_BUFFER_SIZE` | 256 | print/println 单行栈缓冲 |
 | `EFMT_DERIVE_STRICT` | 1 | 0 = 允许老宏写错作用域时退化成地址输出 |
+| `EFMT_DERIVE_ENABLE_CAPS` / `..._SCHEMA` / `..._TAGS` | 1 / 1 / 1 | 能力标签登记 / schema 原料 / 字段标签解析（不用就关，各省一点编译期与 Flash） |
+| `EFMT_DERIVE_MAX_TAGS` | 8 | 单字段标签个数上限 |
 | `ELOG_MAX_LOGGERS` / `ELOG_MAX_RECORD_SIZE` | 8 / 384 | logger 槽位数 / 单行日志栈缓冲 |
 
 ## 文档
@@ -250,13 +261,14 @@ SysTick 计时（1 tick ≈ 570 条 guest 指令，同一环境标定），**确
 ```
 
 当前基线：行为检查 149 项 × 2 标准（含 `E_FMT_STR` 快路径/转义回退/显式索引用例）、
-E_FMT_DERIVE 33 项 × 2 配置、派生宏 28 项（宿主+嵌入式）、浮点对拍 24.6 万次 0 失败、
+E_FMT_DERIVE 34 项 × 2 配置、派生宏 28 项（宿主+嵌入式）、eserde 基座 6 项 × 3 配置、浮点对拍 24.6 万次 0 失败、
 五个编译期反例按预期失败 —— 全部通过。
 
 > 需要 ETL 才能跑 elog 相关步骤：没接 ETL 时脚本会跳过并提示（`-EtlInclude` 指定位置）。
 
 ## 版本历史
 
+- **v1.9** `E_FMT_DERIVE(声明, Debug, Serialize)` 接口（第一个参数=声明，其余=能力标签）、`E_FMT_DERIVE_ENUM` 枚举入口、`[[efmt::arg(short, long)]]` 字段标签解析，新增 `eserde/` 编译期基座（能力查询 + schema + 字段访问）
 - **v1.8** elog 支持 ETL 类型：`etl::string/optional/pair/variant` + 容器直接格式化，elog 默认开容器格式化；便捷 API 改 `const Args&...` 转发
 - **v1.7** 修复老宏写错作用域静默退化成地址输出（`EFMT_DERIVE_STRICT` 编译期拦截）
 - **v1.6** `E_FMT_DERIVE` 声明即推导（纯 C++17，对标 Rust `#[derive(Debug)]`），`E_FMT_FIELDS` 类型内兜底

@@ -10,9 +10,9 @@
 #include <middleware/efmt/core/format.hpp>
 #include <middleware/efmt/core/format_output.hpp>
 
-E_FMT_DERIVE(struct imu { float ax, ay, az; });
+E_FMT_DERIVE(struct imu { float ax; float ay; float az; });
 E_FMT_DERIVE(struct cfg { int retry; bool verbose; char tag[8]; });
-E_FMT_DERIVE(enum class state { idle, busy = 5, fault });
+E_FMT_DERIVE_ENUM(enum class state { idle, busy = 5, fault });
 
 int main() {
   char line[128];

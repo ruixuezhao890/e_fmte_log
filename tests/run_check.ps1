@@ -156,6 +156,10 @@ Invoke-EfmtCompileFail -Name 'E_FMT_DERIVE with an unformattable member' -Expect
 
 Invoke-EfmtCompileFail -Name 'derive macro outside the type namespace' -ExpectedPattern '请把宏写在' -Arguments @('-std=c++17', '-O2', "-I$include", (Join-Path $PSScriptRoot 'efmt_compile_fail_derive_scope.cpp'), '-o', (Join-Path $out 'compile_fail_scope.exe'))
 
+Invoke-EfmtCompileFail -Name 'E_FMT_DERIVE with a top-level comma' -ExpectedPattern '第一个参数只能是' -Arguments @('-std=c++17', '-O2', "-I$include", (Join-Path $PSScriptRoot 'efmt_compile_fail_derive_commas.cpp'), '-o', (Join-Path $out 'compile_fail_derive_commas.exe'))
+
+Invoke-EfmtCompileFail -Name 'enum handed to E_FMT_DERIVE' -ExpectedPattern 'E_FMT_DERIVE_ENUM' -Arguments @('-std=c++17', '-O2', "-I$include", (Join-Path $PSScriptRoot 'efmt_compile_fail_derive_enum.cpp'), '-o', (Join-Path $out 'compile_fail_derive_enum.exe'))
+
 $elog = Join-Path $root 'elog\elog.hpp'
 if ((Test-Path $elog) -and $hasEtl) {
     $elogExe = Join-Path $out 'elog_integration.exe'
@@ -182,6 +186,30 @@ if ((Test-Path $elog) -and $hasEtl) {
         Invoke-EfmtRun 'elog integration (embedded)' $elogEmbExe
     }
 }
+# eserde：efmt 的编译期反射 / 能力基座（与 elog 同类的外挂层，efmt 本体不认识它）
+$eserde = Join-Path $root 'eserde\serde.hpp'
+if (Test-Path $eserde) {
+    $eserdeExe = Join-Path $out 'eserde_schema_check.exe'
+    $eserdeArgs = @('-std=c++17') + $baseArgs + @("-I$root", (Join-Path $PSScriptRoot 'eserde_schema_check.cpp'), '-o', $eserdeExe)
+    if (Invoke-EfmtBuild 'eserde schema / caps / tags' $eserdeArgs) {
+        Invoke-EfmtRun 'eserde schema / caps / tags' $eserdeExe
+    }
+
+    # 裁剪：-DEFMT_DERIVE_ENABLE_TAGS=0 时不解析标签，其它能力照旧
+    $eserdeNoTagsExe = Join-Path $out 'eserde_no_tags_check.exe'
+    $eserdeNoTagsArgs = @('-std=c++17') + $baseArgs + @('-DEFMT_DERIVE_ENABLE_TAGS=0', "-I$root", (Join-Path $PSScriptRoot 'eserde_no_tags_check.cpp'), '-o', $eserdeNoTagsExe)
+    if (Invoke-EfmtBuild 'eserde with tag parsing trimmed off' $eserdeNoTagsArgs) {
+        Invoke-EfmtRun 'eserde (no tags)' $eserdeNoTagsExe
+    }
+
+    # 嵌入式配置：基座不依赖宿主特性
+    $eserdeEmbExe = Join-Path $out 'eserde_schema_check_embedded.exe'
+    $eserdeEmbArgs = @('-std=c++17') + $baseArgs + @('-DEFMT_ENABLE_HOSTED=0', "-I$root", (Join-Path $PSScriptRoot 'eserde_schema_check.cpp'), '-o', $eserdeEmbExe)
+    if (Invoke-EfmtBuild 'eserde (embedded configuration)' $eserdeEmbArgs) {
+        Invoke-EfmtRun 'eserde (embedded)' $eserdeEmbExe
+    }
+}
+
 if ($Bench) {
     # 宿主默认走 libc 浮点；再加一轮自带引擎，方便对比两种实现的耗时
     $variants = @(

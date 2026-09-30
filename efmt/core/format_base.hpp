@@ -153,6 +153,32 @@ namespace e_fmt {
 #define EFMT_DERIVE_MAX_ARRAY_ITEMS 8
 #endif
 
+// ---------------------------------------------------------------------------
+// E_FMT_DERIVE 的"基座"接口（eserde 等上层用；不 include 上层时零成本）
+// ---------------------------------------------------------------------------
+// 能力标签登记（efmt_derive_caps，ADL）：E_FMT_DERIVE(decl, Debug, Serialize) 里的
+// 标签原样登记给上层查（eserde::has_cap_v）。关掉只影响上层查询，打印不受影响。
+#ifndef EFMT_DERIVE_ENABLE_CAPS
+#define EFMT_DERIVE_ENABLE_CAPS 1
+#endif
+
+// schema 原料（efmt_derive_decl，ADL）：把声明原文交给上层做编译期解析。
+// 关掉后 eserde 这类上层用不了（省掉一个 constexpr 函数和字符串字面量的机会）。
+#ifndef EFMT_DERIVE_ENABLE_SCHEMA
+#define EFMT_DERIVE_ENABLE_SCHEMA 1
+#endif
+
+// 属性标签解析（[[efmt::arg(short, long)]]）：0 = 只把属性当注释跳过（字段名照常），
+// 不解析标签。极致裁剪的固件可以关掉。
+#ifndef EFMT_DERIVE_ENABLE_TAGS
+#define EFMT_DERIVE_ENABLE_TAGS 1
+#endif
+
+// 单个字段/枚举取值最多几个标签（[[efmt::arg(a, b, ...)]] 的参数个数上限）
+#ifndef EFMT_DERIVE_MAX_TAGS
+#define EFMT_DERIVE_MAX_TAGS 8
+#endif
+
 // 严格模式（默认开）：
 //   * 成员没有格式化器                -> 编译报错（Rust 里相当于没实现 Debug）
 //   * 有字段却找不到格式化器的聚合体  -> 编译报错（多半是宏写错了作用域，或忘了注册）
