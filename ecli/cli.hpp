@@ -43,6 +43,8 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
+#include <limits>
 #include <string_view>
 #include <type_traits>
 #include <utility>
@@ -92,6 +94,9 @@ enum class error {
   too_many_tokens,   // 词法缓冲装不下（token 数超 ECLI_MAX_TOKENS，或去引号后超 ECLI_MAX_LINE）
   bad_quote,         // 一行文本里引号没闭合
   unknown_command,   // 命令表里没有这个命令（ecli/command.hpp 用）
+  version_requested, // -V / --version：不是失败，调用方打印版本后正常退出
+  conflict,          // 互斥项同时给了（conflicts = "…" / group = "…"）
+  missing_dependency,// requires = "…" 的依赖没给
 };
 
 constexpr const char *error_name(error e) {
@@ -108,6 +113,9 @@ constexpr const char *error_name(error e) {
     case error::too_many_tokens: return "too_many_tokens";
     case error::bad_quote: return "bad_quote";
     case error::unknown_command: return "unknown_command";
+    case error::version_requested: return "version_requested";
+    case error::conflict: return "conflict";
+    case error::missing_dependency: return "missing_dependency";
   }
   return "?";
 }
@@ -134,6 +142,7 @@ struct token_list {
 struct error_info {
   std::string_view token{};         // 出问题的 token（选项名或取值）
   std::size_t option_index = npos;  // 相关字段在 schema 里的下标；npos = 没有
+  std::size_t other_index = npos;   // conflict / missing_dependency 里的"另一项"
   std::size_t index = 0;            // token 在命令行里的下标（0 起）
 };
 
@@ -141,15 +150,26 @@ struct error_info {
 // 一个字段在命令行里长什么样（编译期从 schema 标签算出来，运行时零解析）
 // ---------------------------------------------------------------------------
 struct option_view {
-  std::string_view field{};      // 字段名（帮助里显示、报错里定位）
-  std::string_view long_name{};  // 长选项名（不含 --）；空 = 没有
-  std::string_view help{};       // help = "…" 的文本
-  char short_name = 0;           // 短选项字符；0 = 没有
-  std::size_t position = 0;      // 位置参数序号（1 起）；0 = 不是位置参数
+  std::string_view field{};       // 字段名（帮助里显示、报错里定位）
+  std::string_view long_name{};   // 长选项名（不含 --）；空 = 没有
+  std::string_view long_alias{};  // alias = "别名"（帮助里不显示，clap 的 alias 语义）
+  std::string_view help{};        // help = "…" 的文本
+  char short_name = 0;            // 短选项字符；0 = 没有
+  char short_alias = 0;           // short_alias = "x"（帮助里不显示）
+  std::size_t position = 0;       // 位置参数序号（1 起）；0 = 不是位置参数
+  // 关系约束：编译期算成位掩码（字段下标 ≤ 31），运行时只跟 seen 位图按位与 —— 零字符串表
+  std::uint32_t requires_mask = 0;   // needs = "b"：给了本项就必须也给 b（clap 的 requires）
+  std::uint32_t conflicts_mask = 0;  // conflicts = "b" / group = "g"：与这些互斥
+  std::uint32_t unless_mask = 0;     // unless = "b" / group_any = "g"：本项必填，除非其中之一给了
+                                     // （needs / conflicts / unless 里的名字：字段名或长选项名都认）
   bool required = false;
-  bool skip = false;             // [[efmt::arg(skip)]]：不进命令行
-  bool takes_value = true;       // false = bool 开关
-  bool repeatable = false;       // 容器目标：同名字段可重复给
+  bool skip = false;              // [[efmt::arg(skip)]]：不进命令行
+  bool takes_value = true;        // false = bool 开关 / count 计数开关
+  bool repeatable = false;        // 容器目标：同名字段可重复给
+  bool count = false;             // count：每出现一次 ++（-vvv）
+  bool trailing = false;          // trailing：本位置参数出现后，余下的 token 全归它（含 -x）
+  bool hyphen = false;            // hyphen：这一项的取值允许以 - 开头
+  char delim = 0;                 // delim = ","：容器取值按分隔符切成多项
 };
 
 namespace detail {
@@ -381,11 +401,28 @@ inline constexpr bool is_repeatable_v = is_growable_range<M>::value &&
                                         !is_writable_string<M>::value &&
                                         !is_char_pointer<M>::value && !is_char_array_v<M>;
 
+// optional 类（std::optional / etl::optional）：给了就是 Some
+template <typename T, typename = void> struct optional_of {
+  static constexpr bool value = false;
+  using type = void;
+};
+
+template <typename T>
+struct optional_of<T, std::void_t<decltype(std::declval<const T &>().has_value()),
+                                  decltype(*std::declval<T &>())>> {
+  using type = std::remove_cv_t<std::remove_reference_t<decltype(*std::declval<T &>())>>;
+  static constexpr bool value = true;
+};
+
+template <typename M> inline constexpr bool is_optional_like_v = optional_of<M>::value;
+template <typename M> using optional_inner_t = typename optional_of<M>::type;
+
 // 能不能直接吃一个取值
 template <typename M>
 inline constexpr bool is_value_type_v =
     std::is_arithmetic<M>::value || ::eserde::detail::is_registered_enum_v<M> ||
-    is_string_like_v<M> || is_char_pointer<M>::value || is_char_array_v<M>;
+    is_string_like_v<M> || is_char_pointer<M>::value || is_char_array_v<M> ||
+    is_optional_like_v<M>;
 
 // 位置序号：pos = "2" → 2；裸 pos → 按声明顺序数第几个 pos 字段
 constexpr std::size_t parse_position(std::string_view s) {
@@ -396,6 +433,64 @@ constexpr std::size_t parse_position(std::string_view s) {
     v = v * 10 + static_cast<std::size_t>(s[i] - '0');
   }
   return v;
+}
+
+// needs / conflicts / unless 的取值：先当字段名找，再当长选项名 / 别名找（两种写法都认）
+template <typename T>
+constexpr std::size_t resolve_field_ref(std::string_view name) {
+  const std::size_t by_field = ::eserde::find_field<T>(name);
+  if (by_field != ::eserde::npos) return by_field;
+  const std::size_t n = ::eserde::field_count<T>();
+  for (std::size_t j = 0; j < n; ++j) {
+    const std::string_view lng = tag_value<T>(j, "long");
+    if (!lng.empty() && lng == name) return j;
+    const std::string_view al = tag_value<T>(j, "alias");
+    if (!al.empty() && al == name) return j;
+  }
+  return ::eserde::npos;
+}
+
+// needs / conflicts / unless → 位掩码（编译期解析；名字不存在由断言拦）
+template <typename T>
+constexpr std::uint32_t tag_field_bits(std::size_t index, std::string_view tag) {
+  std::uint32_t bits = 0;
+  const std::size_t n = ::eserde::tag_count<T>(index);
+  for (std::size_t k = 0; k < n; ++k) {
+    const auto t = ::eserde::tag<T>(index, k);
+    if (t.name != tag || !t.has_value) continue;
+    const std::size_t at = resolve_field_ref<T>(t.value);
+    if (at != ::eserde::npos && at < 32) bits |= (1u << at);
+  }
+  return bits;
+}
+
+// 同组字段合成的位掩码：group = "g"（互斥）/ group_any = "g"（至少一个）
+template <typename T>
+constexpr std::uint32_t group_bits(std::size_t index, std::string_view tag) {
+  const std::string_view mine = tag_value<T>(index, tag);
+  if (mine.empty()) return 0;
+  std::uint32_t bits = 0;
+  const std::size_t n = ::eserde::field_count<T>();
+  for (std::size_t j = 0; j < n; ++j) {
+    if (j == index) continue;
+    if (tag_value<T>(j, tag) == mine) bits |= (1u << j);
+  }
+  return bits;
+}
+
+// needs / conflicts / unless 引用的字段必须真实存在（写错了编译期就拦）
+template <typename T, std::size_t I>
+constexpr bool relation_names_ok() {
+  constexpr std::string_view kTags[] = {"needs", "conflicts", "unless"};
+  for (std::size_t t = 0; t < 3; ++t) {
+    const std::size_t n = ::eserde::tag_count<T>(I);
+    for (std::size_t k = 0; k < n; ++k) {
+      const auto tag = ::eserde::tag<T>(I, k);
+      if (tag.name != kTags[t] || !tag.has_value) continue;
+      if (resolve_field_ref<T>(tag.value) == ::eserde::npos) return false;
+    }
+  }
+  return true;
 }
 
 // [[efmt::arg(...)]] → option_view；写法不对就在这里编译报错（不猜、不静默）
@@ -410,13 +505,25 @@ constexpr option_view make_option() {
   constexpr std::string_view short_alias = tag_value<T>(I, "short");
   constexpr std::string_view pos_alias = tag_value<T>(I, "pos");
 
+  constexpr std::string_view alias_text = tag_value<T>(I, "alias");
+  constexpr std::string_view short_alias_text = tag_value<T>(I, "short_alias");
+  constexpr std::string_view delim_text = tag_value<T>(I, "delim");
+
   option_view v{};
   v.field = ::eserde::field_name<T>(I);
   v.help = tag_value<T>(I, "help");
   v.skip = skipped;
   v.required = ::eserde::has_tag<T>(I, "required");
-  v.takes_value = !is_bool_v<M>;
+  constexpr bool is_count = ::eserde::has_tag<T>(I, "count");
+  constexpr bool is_trailing = ::eserde::has_tag<T>(I, "trailing");
+  constexpr bool is_hyphen = ::eserde::has_tag<T>(I, "hyphen");
+  constexpr char delim_ch = delim_text.empty() ? '\0' : delim_text[0];
+  v.count = is_count;
+  v.trailing = is_trailing;
+  v.hyphen = is_hyphen;
+  v.takes_value = !is_bool_v<M> && !is_count;
   v.repeatable = is_repeatable_v<M>;
+  v.delim = delim_ch;
   if (skipped) return v;   // 标了 skip：不进命令行，也不做取值类型检查
 
   // 注意：static_assert 在实例化时就检查，拦不住上面那句运行时早返回 ——
@@ -435,11 +542,28 @@ constexpr option_view make_option() {
                 "[[efmt::arg(short = \"x\")]]：short 只能给一个字符（不给取值则用字段名首字母）");
   static_assert(!has_pos || pos_alias.empty() || parse_position(pos_alias) != 0,
                 "[[efmt::arg(pos = \"2\")]]：pos 的取值只能是 1 起的位置序号");
+  // 第一批 / 第二批新增标签的写法校验
+  static_assert(skipped || relation_names_ok<T, I>(),
+                "needs / conflicts / unless 的取值必须是本类型里真实存在的字段名或选项名（写错就是这句）");
+  static_assert(skipped || !is_count || (std::is_integral<M>::value && !is_bool_v<M>),
+                "count 只能标在整数成员上（-vvv 那种计数开关）");
+  static_assert(skipped || !(has_pos && is_count), "count 是命名开关，不能标在位置参数上");
+  static_assert(skipped || !is_trailing || (has_pos && is_repeatable_v<M>),
+                "trailing 只能标在【可重复的位置参数（容器）】上：它把余下的 token 全收走");
+  static_assert(skipped || !(is_trailing && delim_ch != 0), "trailing 与 delim 别叠着标");
+  static_assert(skipped || delim_ch == 0 || is_repeatable_v<M>,
+                "delim 只能标在可重复的容器成员上（把一个取值切成多项）");
+  static_assert(skipped || !is_hyphen || (!is_bool_v<M> && !is_count),
+                "hyphen 只能标在收取值的选项上（允许取值以 - 开头）");
+  static_assert(skipped || short_alias_text.size() <= 1, "short_alias 只能给一个字符");
+  static_assert(skipped || delim_text.size() <= 1, "delim 只能给一个字符（例如 delim = \",\"）");
 
   if (has_long) v.long_name = long_alias.empty() ? v.field : long_alias;
+  if (!alias_text.empty()) v.long_alias = alias_text;
   if (has_short) {
     v.short_name = short_alias.empty() ? v.field[0] : short_alias[0];
   }
+  if (!short_alias_text.empty()) v.short_alias = short_alias_text[0];
   if (has_pos) {
     if (pos_alias.empty()) {
       // 裸 pos：按声明顺序数第几个 pos 字段（显式序号与裸序号混用时以声明顺序为准）
@@ -452,7 +576,44 @@ constexpr option_view make_option() {
       v.position = parse_position(pos_alias);
     }
   }
+
+  // 关系约束：编译期算成位掩码（运行时只跟 seen 位图按位与，零字符串表）
+  v.requires_mask = tag_field_bits<T>(I, "needs");   // clap 的 requires（requires 是 C++20 关键字）
+  v.conflicts_mask = tag_field_bits<T>(I, "conflicts") | group_bits<T>(I, "group");
+  v.unless_mask = tag_field_bits<T>(I, "unless") | group_bits<T>(I, "group_any");
   return v;
+}
+
+// 长名 / 别名 / 短名不能撞车（撞了编译期就报，别等运行时"命中第一个"）
+template <typename T, std::size_t... I>
+constexpr bool names_ok(std::index_sequence<I...>) {
+  const std::array<option_view, sizeof...(I)> t = {make_option<T, I>()...};
+  for (std::size_t a = 0; a < t.size(); ++a) {
+    if (t[a].skip) continue;
+    const std::string_view longs_a[2] = {t[a].long_name, t[a].long_alias};
+    const char shorts_a[2] = {t[a].short_name, t[a].short_alias};
+    for (std::size_t b = a + 1; b < t.size(); ++b) {
+      if (t[b].skip) continue;
+      const std::string_view longs_b[2] = {t[b].long_name, t[b].long_alias};
+      const char shorts_b[2] = {t[b].short_name, t[b].short_alias};
+      for (std::size_t x = 0; x < 2; ++x) {
+        if (longs_a[x].empty()) continue;
+        for (std::size_t y = 0; y < 2; ++y) {
+          if (longs_a[x] == longs_b[y]) return false;
+        }
+        for (std::size_t y = 0; y < 2; ++y) {
+          if (shorts_b[y] != 0 && longs_a[x].size() == 1 && longs_a[x][0] == shorts_b[y]) return false;
+        }
+      }
+      for (std::size_t x = 0; x < 2; ++x) {
+        if (shorts_a[x] == 0) continue;
+        for (std::size_t y = 0; y < 2; ++y) {
+          if (shorts_a[x] == shorts_b[y]) return false;
+        }
+      }
+    }
+  }
+  return true;
 }
 
 template <typename T, std::size_t... I>
@@ -485,19 +646,25 @@ template <typename T> struct options_holder {
   static constexpr std::array<option_view, count> value = make_options<T>(seq{});
   static_assert(positions_ok<T>(seq{}),
                 "位置参数序号有冲突：序号必须唯一，且可重复的位置参数（容器）必须是最后一个");
+  static_assert(names_ok<T>(seq{}),
+                "选项名撞车：long / alias / short / short_alias 必须两两不同");
 };
 
 // 选项查找（线性扫 —— 参数类型字段 ≤ EFMT_DERIVE_MAX_FIELDS，够用且零额外表）
 inline std::size_t find_long(const option_view *t, std::size_t n, std::string_view name) {
   for (std::size_t i = 0; i < n; ++i) {
-    if (!t[i].skip && !t[i].long_name.empty() && t[i].long_name == name) return i;
+    if (t[i].skip) continue;
+    if (!t[i].long_name.empty() && t[i].long_name == name) return i;
+    if (!t[i].long_alias.empty() && t[i].long_alias == name) return i;   // alias = "别名"
   }
   return npos;
 }
 
 inline std::size_t find_short(const option_view *t, std::size_t n, char c) {
   for (std::size_t i = 0; i < n; ++i) {
-    if (!t[i].skip && t[i].short_name == c) return i;
+    if (t[i].skip) continue;
+    if (t[i].short_name == c) return i;
+    if (t[i].short_alias != 0 && t[i].short_alias == c) return i;   // short_alias = "x"
   }
   return npos;
 }
@@ -572,20 +739,26 @@ inline error assign_element(E &slot, std::string_view text) {
   }
 }
 
+// 一次赋值要做什么（比"两个 bool"清楚：取一个值 / 置位 / 清零 / 计数）
+enum class action { value, flag_on, flag_off, count };
+
 template <std::size_t I, typename T>
-error assign_field(T &obj, std::string_view text, bool has_text, bool flag_on) {
+error assign_field(T &obj, std::string_view text, action act) {
   if constexpr (field_skipped<T, I>()) {
     (void)obj;
     (void)text;
-    (void)has_text;
-    (void)flag_on;
+    (void)act;
     return error::unknown_option;   // 永远不会被匹配到；这里只是跳过类型检查
   } else {
     using M = member_t<T, I>;
     auto &slot = ::eserde::field_at<I>(obj);
     if constexpr (std::is_same<M, bool>::value) {
-      if (!has_text) {
-        slot = flag_on;
+      if (act == action::flag_on) {
+        slot = true;
+        return error::ok;
+      }
+      if (act == action::flag_off) {
+        slot = false;
         return error::ok;
       }
       bool b = false;
@@ -593,10 +766,22 @@ error assign_field(T &obj, std::string_view text, bool has_text, bool flag_on) {
       slot = b;
       return error::ok;
     } else if constexpr (std::is_integral<M>::value) {
+      if (act == action::count) {   // count：每出现一次 ++（饱和，不绕回）
+        if (slot < std::numeric_limits<M>::max()) ++slot;
+        return error::ok;
+      }
       unsigned long long mag = 0;
       bool neg = false;
       if (!parse_integer(text, mag, neg) || !integer_fits<M>(mag, neg)) return error::invalid_value;
       slot = integer_value<M>(mag, neg);
+      return error::ok;
+    } else if constexpr (is_optional_like_v<M>) {
+      // optional 类（std::optional / etl::optional）：给了就是 Some，没给保持原状
+      using E = optional_inner_t<M>;
+      E item{};
+      const error e = assign_element(item, text);
+      if (e != error::ok) return e;
+      slot = static_cast<E &&>(item);
       return error::ok;
     } else if constexpr (std::is_floating_point<M>::value) {
       double d = 0.0;
@@ -623,6 +808,22 @@ error assign_field(T &obj, std::string_view text, bool has_text, bool flag_on) {
       return error::ok;
     } else if constexpr (is_repeatable_v<M>) {
       using E = std::remove_cv_t<std::remove_reference_t<decltype(*slot.begin())>>;
+      constexpr char kDelim = options_holder<T>::value[I].delim;
+      if (kDelim != 0 && text.find(kDelim) != std::string_view::npos) {
+        // delim = ","：一个取值切成多项（--tag=a,b,c）
+        std::size_t begin = 0;
+        while (true) {
+          const std::size_t at = text.find(kDelim, begin);
+          const std::size_t end = (at == std::string_view::npos) ? text.size() : at;
+          E item{};
+          const error e = assign_element(item, text.substr(begin, end - begin));
+          if (e != error::ok) return e;
+          if (!push_checked(slot, static_cast<E &&>(item))) return error::too_many_values;
+          if (at == std::string_view::npos) break;
+          begin = at + 1;
+        }
+        return error::ok;
+      }
       E item{};
       const error e = assign_element(item, text);
       if (e != error::ok) return e;
@@ -638,18 +839,26 @@ error assign_field(T &obj, std::string_view text, bool has_text, bool flag_on) {
 
 // 按 schema 下标写第 index 个字段：编译期展开成链，运行期只走一次比较
 template <std::size_t I, typename T>
-error assign_rec(T &obj, std::size_t index, std::string_view text, bool has_text, bool flag_on) {
-  if (index == I) return assign_field<I>(obj, text, has_text, flag_on);
+error assign_rec(T &obj, std::size_t index, std::string_view text, action act) {
+  if (index == I) return assign_field<I>(obj, text, act);
   if constexpr (I + 1 < ::eserde::field_count<T>()) {
-    return assign_rec<I + 1>(obj, index, text, has_text, flag_on);
+    return assign_rec<I + 1>(obj, index, text, act);
   } else {
     return error::unknown_option;
   }
 }
 
 template <typename T>
-error assign_at(T &obj, std::size_t index, std::string_view text, bool has_text, bool flag_on) {
-  return assign_rec<0>(obj, index, text, has_text, flag_on);
+error assign_at(T &obj, std::size_t index, std::string_view text, action act) {
+  return assign_rec<0>(obj, index, text, act);
+}
+
+// 取位掩码里第一个置位的下标（报错时指出"是哪一项"）
+inline std::size_t first_bit(std::uint32_t bits) {
+  for (std::size_t i = 0; i < 32; ++i) {
+    if ((bits & (1u << i)) != 0) return i;
+  }
+  return npos;
 }
 
 // ---------------------------------------------------------------------------
@@ -660,7 +869,7 @@ error run(const token_list &tokens, T &obj, error_info &info) {
   constexpr std::size_t n = options_holder<T>::count;
   const option_view *opts = options_holder<T>::value.data();
 
-  unsigned long long seen = 0;
+  std::uint32_t seen = 0;
   bool no_more_options = false;
   std::size_t next_pos = 1;
 
@@ -669,6 +878,7 @@ error run(const token_list &tokens, T &obj, error_info &info) {
     info.index = i;
     info.token = tok;
     info.option_index = npos;
+    info.other_index = npos;
 
     if (!no_more_options && tok == "--") {
       no_more_options = true;
@@ -690,25 +900,36 @@ error run(const token_list &tokens, T &obj, error_info &info) {
       }
 
       std::size_t idx = find_long(opts, n, name);
-      bool flag_on = true;
+      action act = action::flag_on;
       if (idx == npos && name.size() > 3 && name.compare(0, 3, "no-") == 0) {
         const std::size_t neg = find_long(opts, n, name.substr(3));
-        if (neg != npos && !opts[neg].takes_value) {
+        if (neg != npos && !opts[neg].takes_value && !opts[neg].count) {
           idx = neg;
-          flag_on = false;
+          act = action::flag_off;
         }
       }
       if (idx == npos) {
 #if ECLI_ENABLE_HELP
         if (name == "help" && find_long(opts, n, "help") == npos) return error::help_requested;
 #endif
+        if (name == "version" && find_long(opts, n, "version") == npos) {
+          return error::version_requested;
+        }
         return error::unknown_option;
       }
       info.option_index = idx;
 
-      if (opts[idx].takes_value) {
+      if (opts[idx].count) {
+        const error e = assign_at(obj, idx, std::string_view{}, action::count);
+        if (e != error::ok) return e;
+      } else if (opts[idx].takes_value) {
         if (!has_value) {
-          if (i + 1 >= tokens.count || looks_like_option(tokens.items[i + 1])) {
+          if (i + 1 >= tokens.count) {
+            info.token = tok;
+            return error::missing_value;
+          }
+          const std::string_view next = tokens.items[i + 1];
+          if (!opts[idx].hyphen && looks_like_option(next)) {   // hyphen：允许取值以 - 开头
             info.token = tok;
             return error::missing_value;
           }
@@ -717,13 +938,13 @@ error run(const token_list &tokens, T &obj, error_info &info) {
           info.index = i;
         }
         info.token = value;
-        const error e = assign_at(obj, idx, value, true, true);
+        const error e = assign_at(obj, idx, value, action::value);
         if (e != error::ok) return e;
       } else {
-        const error e = assign_at(obj, idx, value, has_value, flag_on);
+        const error e = assign_at(obj, idx, value, has_value ? action::value : act);
         if (e != error::ok) return e;
       }
-      seen |= (1ull << idx);
+      seen |= (1u << idx);
       continue;
     }
 
@@ -734,6 +955,7 @@ error run(const token_list &tokens, T &obj, error_info &info) {
 #if ECLI_ENABLE_HELP
         if (c == 'h' && find_short(opts, n, 'h') == npos) return error::help_requested;
 #endif
+        if (c == 'V' && find_short(opts, n, 'V') == npos) return error::version_requested;
         const std::size_t idx = find_short(opts, n, c);
         if (idx == npos) {
           info.token = tok;
@@ -741,12 +963,28 @@ error run(const token_list &tokens, T &obj, error_info &info) {
         }
         info.option_index = idx;
 
+        if (opts[idx].count) {   // -vvv
+          const error e = assign_at(obj, idx, std::string_view{}, action::count);
+          if (e != error::ok) {
+            info.token = tok;
+            return e;
+          }
+          seen |= (1u << idx);
+          ++k;
+          continue;
+        }
+
         if (opts[idx].takes_value) {
           std::string_view rest = tok.substr(k + 1);
           const bool had_eq = !rest.empty() && rest.front() == '=';
           if (had_eq) rest = rest.substr(1);
           if (rest.empty() && !had_eq) {
-            if (i + 1 >= tokens.count || looks_like_option(tokens.items[i + 1])) {
+            if (i + 1 >= tokens.count) {
+              info.token = tok;
+              return error::missing_value;
+            }
+            const std::string_view next = tokens.items[i + 1];
+            if (!opts[idx].hyphen && looks_like_option(next)) {
               info.token = tok;
               return error::missing_value;
             }
@@ -755,18 +993,18 @@ error run(const token_list &tokens, T &obj, error_info &info) {
             info.index = i;
           }
           info.token = rest;
-          const error e = assign_at(obj, idx, rest, true, true);
+          const error e = assign_at(obj, idx, rest, action::value);
           if (e != error::ok) return e;
-          seen |= (1ull << idx);
+          seen |= (1u << idx);
           break;   // 取值吃掉了这个 token 的余下部分
         }
 
-        const error e = assign_at(obj, idx, std::string_view{}, false, true);
+        const error e = assign_at(obj, idx, std::string_view{}, action::flag_on);
         if (e != error::ok) {
           info.token = tok;
           return e;
         }
-        seen |= (1ull << idx);
+        seen |= (1u << idx);
         ++k;
       }
       continue;
@@ -776,19 +1014,44 @@ error run(const token_list &tokens, T &obj, error_info &info) {
     const std::size_t idx = find_position(opts, n, next_pos);
     if (idx == npos) return error::too_many_args;
     info.option_index = idx;
-    const error e = assign_at(obj, idx, tok, true, true);
+    const error e = assign_at(obj, idx, tok, action::value);
     if (e != error::ok) return e;
-    seen |= (1ull << idx);
+    seen |= (1u << idx);
+    if (opts[idx].trailing) {
+      no_more_options = true;   // trailing：余下的 token 全归它（连 -x 也算值）
+    }
     if (!opts[idx].repeatable) ++next_pos;   // 可重复的那个把余下的位置参数全收走
   }
 
-  // 必填检查（用位图判别"给没给"，与字段的默认值无关）
+  // 收尾校验，三件事共用 seen 位图：
+  //   1) required / unless = "…"（必填，除非其中之一给了）
+  //   2) conflicts = "…" / group = "…"（互斥）
+  //   3) requires = "…"（依赖）
   for (std::size_t k = 0; k < n; ++k) {
-    if (opts[k].skip || !opts[k].required) continue;
-    if ((seen & (1ull << k)) == 0) {
+    if (opts[k].skip) continue;
+    const std::uint32_t bit = 1u << k;
+    if ((seen & bit) == 0) {
+      const bool need = opts[k].required ||
+                        (opts[k].unless_mask != 0 && (seen & opts[k].unless_mask) == 0);
+      if (need) {
+        info.option_index = k;
+        info.token = std::string_view{};
+        return error::missing_required;
+      }
+      continue;
+    }
+    if ((opts[k].conflicts_mask & seen) != 0) {
       info.option_index = k;
+      info.other_index = first_bit(opts[k].conflicts_mask & seen);
       info.token = std::string_view{};
-      return error::missing_required;
+      return error::conflict;
+    }
+    const std::uint32_t missing = opts[k].requires_mask & ~seen;
+    if (missing != 0) {
+      info.option_index = k;
+      info.other_index = first_bit(missing);
+      info.token = std::string_view{};
+      return error::missing_dependency;
     }
   }
   return error::ok;
@@ -849,7 +1112,7 @@ inline std::size_t left_column_len(const option_view &v) {
   if (v.short_name != 0) w += 2;
   if (v.short_name != 0 && !v.long_name.empty()) w += 2;
   if (!v.long_name.empty()) w += 2 + v.long_name.size();
-  const bool positional = (v.short_name == 0 && v.long_name.empty());
+  const bool positional = (v.position != 0);
   if (positional) w += v.field.size() + 2 + (v.repeatable ? 3 : 0);
   if (v.takes_value && !positional) w += 8;   // " <value>"（位置参数的占位符本身就是取值）
   return w;
@@ -866,7 +1129,7 @@ inline void put_left_column(text_out &out, const option_view &v) {
     out.put_lit("--");
     out.put(v.long_name);
   }
-  const bool positional = (v.short_name == 0 && v.long_name.empty());
+  const bool positional = (v.position != 0);
   if (positional) put_positional(out, v);   // 位置参数："<input>"
   if (v.takes_value && !positional) out.put_lit(" <value>");
 }
@@ -1107,6 +1370,17 @@ std::size_t write_usage(std::string_view app, char *buf, std::size_t cap) {
 }
 
 // 帮助：about 可空；选项列的对齐宽度按最长的一项算
+// 版本行："app 1.2.3\n"（版本号由调用方给 —— 库不猜你的版本）
+inline std::size_t write_version(std::string_view app, std::string_view version, char *buf,
+                                 std::size_t cap) {
+  detail::text_out out{buf, cap, 0};
+  out.put(app);
+  out.put(' ');
+  out.put(version);
+  out.put('\n');
+  return out.finish();
+}
+
 template <typename T>
 std::size_t write_help(std::string_view app, std::string_view about, char *buf, std::size_t cap) {
 #if ECLI_ENABLE_HELP
@@ -1162,9 +1436,14 @@ std::size_t write_error(std::string_view app, error e, const error_info &info, c
   constexpr std::size_t n = detail::options_holder<T>::count;
   const option_view *opts = detail::options_holder<T>::value.data();
   char label_buf[48];
+  char other_buf[48];
   std::string_view label{};
+  std::string_view other{};
   if (info.option_index < n) {
     label = detail::option_label(opts[info.option_index], label_buf, sizeof(label_buf));
+  }
+  if (info.other_index < n) {
+    other = detail::option_label(opts[info.other_index], other_buf, sizeof(other_buf));
   }
   detail::text_out out{buf, cap, 0};
   out.put_lit("error: ");
@@ -1224,6 +1503,23 @@ std::size_t write_error(std::string_view app, error e, const error_info &info, c
       out.put(info.token);
       out.put_lit("'");
       break;
+    case error::version_requested:
+      out.put_lit("version requested");
+      break;
+    case error::conflict:
+      out.put_lit("'");
+      out.put(label);
+      out.put_lit("' conflicts with '");
+      out.put(other);
+      out.put_lit("'");
+      break;
+    case error::missing_dependency:
+      out.put_lit("'");
+      out.put(label);
+      out.put_lit("' requires '");
+      out.put(other);
+      out.put_lit("'");
+      break;
   }
   out.put_lit("\n\n");
   out.put_lit("usage: ");
@@ -1242,6 +1538,14 @@ std::size_t write_error(std::string_view app, error e, const error_info &info, c
 
 #if EFMT_ENABLE_DYNAMIC_STRING
 // 宿主便利版：直接拿 std::string（嵌入式没有 std::string，所以按开关裁剪）
+inline std::string version_string(std::string_view app, std::string_view version) {
+  const std::size_t need = write_version(app, version, nullptr, 0);
+  std::string out(need + 1, '\0');
+  write_version(app, version, &out[0], need + 1);
+  out.resize(need);
+  return out;
+}
+
 template <typename T>
 std::string usage_string(std::string_view app) {
   const std::size_t need = write_usage<T>(app, nullptr, 0);

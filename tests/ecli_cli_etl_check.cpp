@@ -10,6 +10,7 @@
  */
 
 #include <middleware/efmt/core/format.hpp>
+#include <middleware/etl/optional.h>
 #include <middleware/etl/string.h>
 #include <middleware/etl/string_view.h>
 #include <middleware/etl/vector.h>
@@ -31,6 +32,7 @@ E_FMT_DERIVE(struct etl_args {
   [[efmt::arg(short = "i", long = "id")]]    int2 ids;
   [[efmt::arg(long = "tag")]]                str4 tags;
   [[efmt::arg(long = "view")]]               etl::string_view view;
+  [[efmt::arg(long = "limit")]]              etl::optional<int> limit;   // optional：给了才是 Some
   [[efmt::arg(pos = "1")]]                   etl::string<4> first;
 }, Cli);
 
@@ -65,6 +67,13 @@ int main() {
     check("etl::vector<etl::string> 可重复", a.tags.size() == 2 && a.tags[1] == "bb");
     check_text("etl::string_view 零拷贝", std::string_view(a.view.data(), a.view.size()), "vt");
     check_text("etl::string 位置参数", a.first.c_str(), "in");
+    check("etl::optional 没给就是空", !a.limit.has_value());
+  }
+  {
+    etl_args a{};
+    check_error("etl::optional 给了就是 Some", parse("--limit 9", a), error::ok);
+    check("etl::optional 取值", a.limit.has_value() && *a.limit == 9);
+    check_error("etl::optional 取值类型不对", parse("--limit abc", a), error::invalid_value);
   }
   {
     // etl::string<N> 满了是静默截断 —— CLI 必须先问容量再写，装不下就报错

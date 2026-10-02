@@ -298,6 +298,24 @@ if (Test-Path $ecli) {
         Invoke-EfmtRun 'ecli command table (embedded)' $cmdEmbExe
     }
 
+    # 第一批 / 第二批：别名 / count(-vvv) / delim(值分隔) / trailing / hyphen / optional / 关系约束
+    $extraExe = Join-Path $out 'ecli_cli_extra_check.exe'
+    $extraArgs = @('-std=c++17') + $baseArgs + @("-I$root", (Join-Path $PSScriptRoot 'ecli_cli_extra_check.cpp'), '-o', $extraExe)
+    if (Invoke-EfmtBuild 'ecli aliases / count / delim / trailing / relations' $extraArgs) {
+        Invoke-EfmtRun 'ecli extras' $extraExe
+    }
+
+    $extraEmbExe = Join-Path $out 'ecli_cli_extra_check_embedded.exe'
+    $extraEmbArgs = @('-std=c++17') + $baseArgs + @('-DEFMT_ENABLE_HOSTED=0', "-I$root", (Join-Path $PSScriptRoot 'ecli_cli_extra_check.cpp'), '-o', $extraEmbExe)
+    if (Invoke-EfmtBuild 'ecli extras (embedded configuration)' $extraEmbArgs) {
+        Invoke-EfmtRun 'ecli extras (embedded)' $extraEmbExe
+    }
+
+    # Negative tests: duplicate option names / a relation tag pointing at a missing field
+    Invoke-EfmtCompileFail -Name 'duplicate option names' -ExpectedPattern '选项名撞车' -Arguments @('-std=c++17', '-O2', "-I$include", "-I$root", (Join-Path $PSScriptRoot 'ecli_compile_fail_names.cpp'), '-o', (Join-Path $out 'compile_fail_cli_names.exe'))
+
+    Invoke-EfmtCompileFail -Name 'relation tag pointing at a missing field' -ExpectedPattern 'needs / conflicts / unless 的取值必须是本类型里真实存在的字段名或选项名' -Arguments @('-std=c++17', '-O2', "-I$include", "-I$root", (Join-Path $PSScriptRoot 'ecli_compile_fail_relation.cpp'), '-o', (Join-Path $out 'compile_fail_cli_relation.exe'))
+
     # Capability gate: no Cli tag means no command line parsing (must be a compile error)
     Invoke-EfmtCompileFail -Name 'cli args without the Cli capability' -ExpectedPattern '这个类型不能做命令行参数' -Arguments @('-std=c++17', '-O2', "-I$include", "-I$root", (Join-Path $PSScriptRoot 'ecli_compile_fail_caps.cpp'), '-o', (Join-Path $out 'compile_fail_cli_caps.exe'))
 }

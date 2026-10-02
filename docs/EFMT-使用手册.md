@@ -795,11 +795,27 @@ ecli::parse(tokens, a);
 | 标签 | 含义 |
 |---|---|
 | `short` / `long` | 用字段名当短 / 长选项（`-l` / `--level`）|
-| `short = "o"` / `long = "output"` | 用别名 |
+| `short = "o"` / `long = "output"` | 指定名字 |
+| `alias = "outfile"` / `short_alias = "F"` | **隐藏别名**（帮助里不显示；对应 clap 的 `alias`）|
 | `pos` / `pos = "2"` | 位置参数；裸 `pos` 按声明顺序编号 |
 | `required` | 必填（没给 → `missing_required`）|
 | `help = "…"` | 帮助文本（帮助表里显示）|
 | `skip` | 不进命令行（内部字段、或类型不支持时用它放过）|
+| `count` | 计数开关：`-vvv` → 3（标在整数字段上，饱和自增）|
+| `delim = ","` | 容器取值按分隔符切分：`--tag=a,b,c` → 三项 |
+| `trailing` | 可重复位置参数：出现后余下的 token 全归它（连 `-x` 也算值）|
+| `hyphen` | 这一项的取值允许以 `-` 开头 |
+| `needs = "b"` | 依赖：给了本项就必须也给 b（clap 的 `requires`；**`requires` 是 C++20 关键字，故改名**）|
+| `conflicts = "b"` | 互斥：两者不能同时给 |
+| `unless = "b"` | 本项必填，**除非** b 给了（clap 的 `required_unless_present`）|
+| `group = "g"` | 同组字段最多给一个（互斥组）|
+| `group_any = "g"` | 同组字段至少给一个 |
+
+关系标签（`needs` / `conflicts` / `unless`）里的名字**字段名或长选项名都认**，可重复标注；
+它们在**编译期**化成 `uint32` 位掩码，运行时只跟 seen 位图按位与 —— 零字符串表、零额外查表。
+选项名撞车（long / alias / short / short_alias 两两不同）与写错的名字都是编译期报错。
+校验顺序：按声明顺序，未给的先查必填（`required` / `unless` / `group_any`），给了的再查互斥与依赖。
+完整标签对照与"和 clap 还差什么"见 [docs/ECLI-与clap的差距清单.md](ECLI-与clap的差距清单.md)。
 
 取值目标（按字段的**真实 C++ 类型**分派，与 json 同源）：
 
@@ -811,7 +827,8 @@ ecli::parse(tokens, a);
 | 注册过的枚举 | 按取值名（`--mode slow`）；也收数字 |
 | `char[N]` / `std::string` / `etl::string<N>` | 拷贝；**装不下报 `value_too_long`，绝不静默截断** |
 | `const char*` / `std::string_view` / `etl::string_view` | 零拷贝别名：指向 argv 或调用方的 scratch |
-| 可增长容器（`std::vector` / `etl::vector`）| 重复选项依次 push；定长容器满了报 `too_many_values` |
+| 可增长容器（`std::vector` / `etl::vector`）| 重复选项依次 push；定长容器满了报 `too_many_values`；配 `delim` 可一次给多项 |
+| `std::optional<T>` / `etl::optional<T>` | 给了才是 `Some`；没给保持空（clap `Option<T>` 的语义）|
 
 命令行语法：`--opt value`、`--opt=value`、`-o value`、`-ovalue`、`-o=value`、
 短选项聚簇 `-vo out.txt`、`--` 之后全是位置参数、`-5` 这类负数值不会被当成选项；
@@ -856,8 +873,10 @@ std::string s = ecli::help_string<args>("app", "my tool");      // 宿主便利�
 #endif
 ```
 
-`-h` / `--help` 不算失败：`parse` 返回 `error::help_requested`，你打帮助、正常退出即可
-（字段没有被改动）。错误码：`unknown_option` / `missing_value` / `invalid_value` /
+`-h` / `--help` 与 `-V` / `--version` 都不算失败：分别返回 `error::help_requested` 与
+`error::version_requested`，你打帮助 / 版本、正常退出即可（字段没有被改动）。
+版本号由调用方给（库不猜）：`write_version("app", "1.2.3", buf, sizeof(buf))`，宿主还有
+`version_string()`。错误码：`unknown_option` / `missing_value` / `invalid_value` /
 `value_too_long` / `missing_required` / `too_many_args` / `too_many_values` /
 `too_many_tokens` / `bad_quote`，配 `error_name()` 与 `error_info`（出错 token + 字段下标）。
 
@@ -1183,9 +1202,9 @@ static_assert(!EFMT_ENABLE_ANSI_STYLES, "嵌入式不要往串口发转义序列
 | 样例（同一份参数类型：`bool` + `const char*` + `int` + `char[32]`，5 个字段） | .text | 相对基线 |
 |------|-------|---------|
 | `-DECLI_SIZE_PROBE_OFF=1`（只留声明与 schema，不调用解析） | 396 B | — |
-| 默认（调用一次 `parse`：词法 + 取值 + 匹配 + 错误码） | 4808 B | **+4.4 KB** |
-| `-DECLI_SIZE_PROBE_HELP=1`（再带上 `write_help` / `write_error`） | 6612 B | **+6.2 KB** |
-| `-DECLI_SIZE_PROBE_TABLE=1`（命令表：2 条命令 + 一次 `dispatch`） | 8836 B | **+8.4 KB** |
+| 默认（调用一次 `parse`：词法 + 取值 + 匹配 + 错误码 + 关系约束） | 5200 B | **+4.7 KB** |
+| `-DECLI_SIZE_PROBE_HELP=1`（再带上 `write_help` / `write_error`） | 7168 B | **+6.6 KB** |
+| `-DECLI_SIZE_PROBE_TABLE=1`（命令表：2 条命令 + 一次 `dispatch`） | 9684 B | **+9.1 KB** |
 
 - **帮助 / 报错文本不调用就不进固件**：只调 `parse` 时不带这 1.8 KB；`ECLI_ENABLE_HELP=0`
   另外省掉 `-h`/`--help` 的内置处理（约 52 B）。
@@ -1196,7 +1215,10 @@ static_assert(!EFMT_ENABLE_ANSI_STYLES, "嵌入式不要往串口发转义序列
   想省就把多个命令合并到同一个参数类型上。
 - 参数结构体里**没有浮点字段就不会实例化浮点取值路径**（不会就此拉进浮点引擎）。
 - 整数溢出的判定刻意不用 64 位除法：带除法的那版会把 `__udivmoddi4`（720 B）拖进固件，
-  改成"编译期常量比较"后同一行读数 5512 → **4808 B**。
+  改成"编译期常量比较"当场少 704 B（当次读数 5512 → 4808）。
+- 别名 / `count` / `delim` / `trailing` / `optional` / 关系约束（`needs` `conflicts` `unless`
+  `group` `group_any`）一共让 parse 行 4808 → **5200 B**（+392 B）：关系约束是 `uint32` 位掩码，
+  运行时按位与，几乎不占表。
 - `-Size` 的 esp32（xtensa）那几行数字大得多（几十 KB），原因是该目标没接 `--specs=nano.specs`：
   多出来的是 C++ 运行期（`__gxx_personality_v0` / `_malloc_r` / `_ctype_` …），不是解析器代码。
   给 ESP32 裁体积时按 7.3 的配置加 `--specs=nano.specs --specs=nosys.specs`。

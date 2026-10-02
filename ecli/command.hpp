@@ -274,6 +274,10 @@ error dispatch(const command (&table)[N], const token_list &tokens, reply out) {
   }
 
   const std::string_view first = tokens.items[0];
+  if (first == "-V" || first == "--version") {
+    // 版本号是调用方的事（库不猜你的版本）：返回错误码，打印交给调用方
+    return error::version_requested;
+  }
   if (first == "help" || first == "-h" || first == "--help" || first == "?") {
     const token_list rest = detail::skip_tokens(tokens, 1);
     if (rest.count == 0) {
