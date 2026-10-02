@@ -755,6 +755,116 @@ header-only 库里这是最精确的开关，不需要任何宏。
 各格式自己的裁剪开关（`ESERDE_JSON_MAX_KEY` / `ESERDE_JSON_MAX_DEPTH` /
 `ESERDE_CBOR_MAX_DEPTH`）见附录 B。
 
+### 5.10 命令行解析：`ecli`（可选，构建在基座上）
+
+对标 Rust `clap` 的 derive 用法：**声明即推导解析器**，字段名一个字都不用写，
+标签就是 `#[arg(...)]` 的对应物。它和 json / cbor 是同一层的"格式"：
+都读同一份 schema、都共用 `traits.hpp` 的取值助手。
+
+```cpp
+#include <ecli/cli.hpp>
+using namespace ecli;
+
+E_FMT_DERIVE(struct args {
+  [[efmt::arg(short, long, help = "verbose output")]]         bool verbose = false;
+  [[efmt::arg(short = "o", long = "output", help = "file")]]  const char *out = nullptr;
+  [[efmt::arg(short = "l", long = "level", help = "0..9")]]   int level = 3;
+  [[efmt::arg(long = "tag", help = "repeatable")]]            etl::vector<etl::string<8>, 4> tags;
+  [[efmt::arg(pos = "1", help = "input file")]]               etl::string<64> input;
+}, Cli);          // 能力标签 Cli：缺了就是编译期报错（与 Serialize / Deserialize 一个套路）
+```
+
+三个解析入口，同一个解析器（解析器**不认识 argv**，只认识 token 表）：
+
+```cpp
+args a{};
+ecli::error e = ecli::parse(argc, argv, a);          // 宿主：argv 零拷贝
+
+char scratch[ECLI_MAX_LINE];
+ecli::parse("--level 9 \"in put.txt\"", a, scratch, sizeof(scratch));   // 一行文本
+
+ecli::token_list tokens = ecli::from_argv(argc, argv);   // 已经有 token 表
+ecli::parse(tokens, a);
+```
+
+语义与 `json::read_from` 一致：**在副本上解析，全部成功才赋回**；没给的字段保持结构体的
+默认成员初始化值；失败返回错误码（不抛异常），原对象一根毫毛不动。
+
+字段标签（写在字段前或后，编译期解析）：
+
+| 标签 | 含义 |
+|---|---|
+| `short` / `long` | 用字段名当短 / 长选项（`-l` / `--level`）|
+| `short = "o"` / `long = "output"` | 用别名 |
+| `pos` / `pos = "2"` | 位置参数；裸 `pos` 按声明顺序编号 |
+| `required` | 必填（没给 → `missing_required`）|
+| `help = "…"` | 帮助文本（帮助表里显示）|
+| `skip` | 不进命令行（内部字段、或类型不支持时用它放过）|
+
+取值目标（按字段的**真实 C++ 类型**分派，与 json 同源）：
+
+| 类型 | 行为 |
+|---|---|
+| `bool` | 开关：`--flag` / `--no-flag` / `--flag=false` |
+| 各种整数 | 十进制 / `0x` 十六进制 / `0b` 二进制；溢出、负数进无符号 → 报错 |
+| `float` / `double` | `1.5` / `-1.5e2`（不认 inf / nan）|
+| 注册过的枚举 | 按取值名（`--mode slow`）；也收数字 |
+| `char[N]` / `std::string` / `etl::string<N>` | 拷贝；**装不下报 `value_too_long`，绝不静默截断** |
+| `const char*` / `std::string_view` / `etl::string_view` | 零拷贝别名：指向 argv 或调用方的 scratch |
+| 可增长容器（`std::vector` / `etl::vector`）| 重复选项依次 push；定长容器满了报 `too_many_values` |
+
+命令行语法：`--opt value`、`--opt=value`、`-o value`、`-ovalue`、`-o=value`、
+短选项聚簇 `-vo out.txt`、`--` 之后全是位置参数、`-5` 这类负数值不会被当成选项；
+一行文本里支持单 / 双引号与 `\\n \\t \\r \\0 \\\\ \\" \\'` 转义。
+
+**多输入源（串口 / 蓝牙 / 键盘）**：因为解析器只认 token 表，各来源在调用方那一层汇合，
+代价只有"每源一个行缓冲"（共用一块缓冲会让两路输入串词）：
+
+```cpp
+static ecli::line_reader<128> g_uart_line, g_ble_line;   // 每源一个
+static char g_token_scratch[ECLI_MAX_LINE];
+
+void on_uart_byte(char c) {
+  if (!g_uart_line.put(c)) return;                       // 还没凑够一行
+  args a{};
+  ecli::error_info info{};
+  const ecli::error e =
+      ecli::parse(g_uart_line.line(), a, g_token_scratch, sizeof(g_token_scratch), &info);
+  if (e != ecli::error::ok) {
+    char msg[128];
+    ecli::write_error<args>("app", e, info, msg, sizeof(msg));
+    uart_write(msg);                                     // 谁问的就回给谁
+    return;
+  }
+  run(a);                                                 // 解析与执行都不重入
+}
+```
+
+- `line_reader`：字节 → 一行（认 `\r` `\n` `\r\n` 与退格；空行不算命令；超长置 `overflow()`）
+- `tokenize`：一行 → token（引号 / 转义；**没引号没转义的 token 直接指原文，不占 scratch**）
+- 传输层（UART / BLE / 键盘扫描）是你的事，中间这三段是库的事；库不提供线程原语、不碰 HAL。
+  RTOS 里中断只往环形缓冲塞字节，解码与执行留给同一个任务。
+
+帮助与报错文本（snprintf 语义，写进调用方缓冲区；`buf = nullptr` 时只量长度）：
+
+```cpp
+char text[512];
+ecli::write_help<args>("app", "my tool", text, sizeof(text));   // usage + 选项表 + 内置 -h/--help
+ecli::write_error<args>("app", e, info, text, sizeof(text));    // error: … + usage
+#if EFMT_ENABLE_DYNAMIC_STRING
+std::string s = ecli::help_string<args>("app", "my tool");      // 宿主便利版
+#endif
+```
+
+`-h` / `--help` 不算失败：`parse` 返回 `error::help_requested`，你打帮助、正常退出即可
+（字段没有被改动）。错误码：`unknown_option` / `missing_value` / `invalid_value` /
+`value_too_long` / `missing_required` / `too_many_args` / `too_many_values` /
+`too_many_tokens` / `bad_quote`，配 `error_name()` 与 `error_info`（出错 token + 字段下标）。
+
+上限与边界：单类型字段 ≤ `EFMT_DERIVE_MAX_FIELDS`（默认 16）、单字段标签 ≤ 8；
+选项匹配是线性扫描（零额外表）；**不做** shell 补全、env 回退、自定义 value_parser、
+嵌套结构体分组选项（嵌套字段要么 `skip`，要么当容器/标量用）。
+
 ---
 
 ## 6. 输出与打印
@@ -1001,6 +1111,30 @@ static_assert(!EFMT_ENABLE_ANSI_STYLES, "嵌入式不要往串口发转义序列
 （`FIELDS` 用宏参数个数，`E_FMT_DERIVE` 先按上限解析拿 count、再按 count 精确定位）。
 同一份三类型样例（3 字段结构体 ×2 + 枚举 ×1）实测 Cortex-M4 `-Os`：8632 → **8220 B**（-412 B）；
 `-Size` 的 derive 行即是这份样例（含整数/浮点新路径后的完整数字）。
+
+### 8.2c 命令行解析的代价（`ecli`，可选层）
+
+`-Size` 会多出三行读数，它们出自同一份源码（`tests/ecli_size_probe.cpp`），靠宏切换。
+下表是 Cortex-M4 / newlib-nano / `-Os` / 整程序 `--gc-sections` 的实测；**行间差值 = 解析器
+代码 + 它拖进固件的那点运行期零件（string_view 相关目标码、选项表 rodata）**，
+不是每一字节都能记在 ecli 头上：
+
+| 样例（同一份参数类型：`bool` + `const char*` + `int` + `char[32]`，5 个字段） | .text | 相对基线 |
+|------|-------|---------|
+| `-DECLI_SIZE_PROBE_OFF=1`（只留声明与 schema，不调用解析） | 396 B | — |
+| 默认（调用一次 `parse`：词法 + 取值 + 匹配 + 错误码） | 4808 B | **+4.4 KB** |
+| `-DECLI_SIZE_PROBE_HELP=1`（再带上 `write_help` / `write_error`） | 6576 B | **+6.2 KB** |
+
+- **帮助 / 报错文本不调用就不进固件**：只调 `parse` 时不带这 1.8 KB；`ECLI_ENABLE_HELP=0`
+  另外省掉 `-h`/`--help` 的内置处理（约 52 B）。
+- **每个参数类型各一份实例**：探针里 `run<cli_args>` 约 1.2 KB，`tokenize` / `parse_integer`
+  这些是各类型共用的。多命令设备要么复用一个参数类型，要么等命令表把这段摊薄。
+- 参数结构体里**没有浮点字段就不会实例化浮点取值路径**（不会就此拉进浮点引擎）。
+- 整数溢出的判定刻意不用 64 位除法：带除法的那版会把 `__udivmoddi4`（720 B）拖进固件，
+  改成"编译期常量比较"后同一行读数 5512 → **4808 B**。
+- `-Size` 的 esp32（xtensa）那几行数字大得多（几十 KB），原因是该目标没接 `--specs=nano.specs`：
+  多出来的是 C++ 运行期（`__gxx_personality_v0` / `_malloc_r` / `_ctype_` …），不是解析器代码。
+  给 ESP32 裁体积时按 7.3 的配置加 `--specs=nano.specs --specs=nosys.specs`。
 
 ### 8.3 栈占用实测（`-fstack-usage`，GCC x64 宿主口径，比值可参考）
 
@@ -1782,6 +1916,9 @@ g++ -std=c++17 -O2 -Itests/include -DEFMT_USE_LIBC_PRINTF=0 -DEFMT_FLOAT_CHECK_I
 | `ESERDE_JSON_MAX_DEPTH` | 8 | JSON 反序列化嵌套深度上限 | 嵌套更深时调大（栈开销随之增加） |
 | `ESERDE_CBOR_MAX_DEPTH` | 8 | CBOR 反序列化嵌套深度上限 | 嵌套更深时调大（栈开销随之增加） |
 | `ESERDE_ENABLE_JSON` / `ESERDE_ENABLE_CBOR` | 1 / 0 | 汇总头 `eserde/eserde.hpp` 拉哪些格式 | 直接 include 具体格式头时这两个宏不参与 |
+| `ECLI_MAX_TOKENS` | 16 | 一条命令最多几个 token（含选项名） | 参数特别多时调大 |
+| `ECLI_MAX_LINE` | 192 | 去引号 / 反转义缓冲、`line_reader` 默认行宽 | 长命令行时调大（栈占用随之增加）|
+| `ECLI_ENABLE_HELP` | 1 | usage / help 文本是否编进去 | 上线固件设 0 省 Flash（`-h` 也不再特殊处理）|
 | `EFMT_MAX_FORMAT_ARGS` | 16 / 8 | 每次调用栈 = 24 B × N | `=4` 省 96 B 栈 |
 | `EFMT_PRINT_BUFFER_SIZE` | 256 / 256 | `print/println` 单行上限 | `=128` 省 128 B 栈 |
 | `EFMT_STRING_BUFFER_SIZE` | 256 | `format()` 是否需要二次分配 | 宿主调优 |

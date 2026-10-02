@@ -1,7 +1,7 @@
 # efmt / elog 沙盒
 
 CLion 里 **File → Open** 选这个 `sandbox` 目录即可（里面有 `CMakeLists.txt`，CLion 会自己 configure 并生成 `cmake-build-*`）。
-C++17；`main.cpp` 是一次功能走查：efmt 打印 → eserde 基座 → JSON → **CBOR** → elog × ETL，
+C++17；`main.cpp` 是一次功能走查：efmt 打印 → eserde 基座 → JSON → **CBOR** → elog × ETL → **ecli 命令行**，
 自带一组自检（跑完打印 `N/N checks passed`，N = `check()` 的条数；全过才返回 0）。
 `tests/run_check.ps1` 会连它一起编、一起跑（沙盒也是库的消费者），接口漂了这里会先红。
 
@@ -29,6 +29,11 @@ CMakeLists 里加了三条，前两条和 `tests/run_check.ps1` 用的完全一�
 
 末尾是 `elog × ETL 类型` 自检段：`etl::string` / `etl::vector`（含嵌套）/ `etl::optional`
 直接格式化，并演示 ETL 类型进 elog 日志（elog 对用户默认打开容器格式，MCU 上打 `etl::vector` 开箱即用）。
+
+末尾是 `ecli 命令行解析` 自检段：同一份 `E_FMT_DERIVE(struct cli_args { ... }, Cli)` 声明，
+既吃宿主 `argv`（`-vo dump.bin --level=7 input.txt`），也吃设备端的"一行文本"
+（`--level 9 "in put.txt"`，带引号与空格）—— 解析器不认识 argv，只认识 token 表；
+顺带打印自动生成的帮助（usage + 选项表）与报错文本（含 usage）。
 
 ## 跑
 
@@ -58,6 +63,9 @@ cmake --build build
 | `EFMT_DERIVE_ENABLE_CAPS` | 1 | 0 = 不登记能力标签（`E_FMT_DERIVE(decl, Debug, Serialize)` 的标签位） |
 | `EFMT_DERIVE_ENABLE_SCHEMA` | 1 | 0 = 不生成 schema 原料（`eserde` 依赖它） |
 | `EFMT_DERIVE_ENABLE_TAGS` | 1 | 0 = 不解析 `[[efmt::arg(...)]]` 字段标签 |
+| `ECLI_MAX_TOKENS` | 16 | 一条命令最多几个 token |
+| `ECLI_MAX_LINE` | 192 | 去引号缓冲 / `line_reader` 行宽 |
+| `ECLI_ENABLE_HELP` | 1 | 0 = 裁掉 usage/help 文本（省 Flash） |
 | `ELOG_MAX_RECORD_SIZE` | 384 | 单条日志的记录缓冲 |
 | `ELOG_MAX_LOGGERS` | 8 | logger 槽位数 |
 

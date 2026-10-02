@@ -259,6 +259,36 @@ if (Test-Path $eserde) {
     Invoke-EfmtCompileFail -Name 'deserialize a type without the Deserialize capability' -ExpectedPattern '这个类型不能反序列化' -Arguments @('-std=c++17', '-O2', "-I$include", "-I$root", (Join-Path $PSScriptRoot 'eserde_compile_fail_caps_read.cpp'), '-o', (Join-Path $out 'compile_fail_caps_read.exe'))
 }
 
+# ecli：命令行解析（efmt + eserde 之上的可选层；解析器不认识 argv，只认识 token 表）
+$ecli = Join-Path $root 'ecli\cli.hpp'
+if (Test-Path $ecli) {
+    # 宿主：argv 与"一行文本"两条路都走一遍
+    $cliExe = Join-Path $out 'ecli_cli_check.exe'
+    $cliArgs = @('-std=c++17') + $baseArgs + @("-I$root", (Join-Path $PSScriptRoot 'ecli_cli_check.cpp'), '-o', $cliExe)
+    if (Invoke-EfmtBuild 'ecli command line parsing (argv + line text)' $cliArgs) {
+        Invoke-EfmtRun 'ecli cli' $cliExe
+    }
+
+    # 嵌入式配置：零堆、零异常，帮助文本照常
+    $cliEmbExe = Join-Path $out 'ecli_cli_check_embedded.exe'
+    $cliEmbArgs = @('-std=c++17') + $baseArgs + @('-DEFMT_ENABLE_HOSTED=0', "-I$root", (Join-Path $PSScriptRoot 'ecli_cli_check.cpp'), '-o', $cliEmbExe)
+    if (Invoke-EfmtBuild 'ecli (embedded configuration)' $cliEmbArgs) {
+        Invoke-EfmtRun 'ecli (embedded)' $cliEmbExe
+    }
+
+    # ETL types: fixed-capacity containers must fail loudly, never truncate silently
+    if ($hasEtl) {
+        $cliEtlExe = Join-Path $out 'ecli_cli_etl_check.exe'
+        $cliEtlArgs = @('-std=c++17') + $baseArgs + @("-I$root", (Join-Path $PSScriptRoot 'ecli_cli_etl_check.cpp'), '-o', $cliEtlExe)
+        if (Invoke-EfmtBuild 'ecli with ETL types' $cliEtlArgs) {
+            Invoke-EfmtRun 'ecli (ETL)' $cliEtlExe
+        }
+    }
+
+    # Capability gate: no Cli tag means no command line parsing (must be a compile error)
+    Invoke-EfmtCompileFail -Name 'cli args without the Cli capability' -ExpectedPattern '这个类型不能做命令行参数' -Arguments @('-std=c++17', '-O2', "-I$include", "-I$root", (Join-Path $PSScriptRoot 'ecli_compile_fail_caps.cpp'), '-o', (Join-Path $out 'compile_fail_cli_caps.exe'))
+}
+
 # sandbox：CLion 试玩工程也是库的消费者 —— 一起编一遍、跑一遍。
 # 它曾经在"能力门禁生效"后静默烂掉（没人编它），这一步就是防这个。
 if ($hasEtl -and (Test-Path (Join-Path $root 'sandbox\main.cpp'))) {
@@ -292,7 +322,11 @@ if ($Size) {
     $templates = @(
         @{ Name = 'default (built-in float)'; Source = 'efmt_embedded_build.cpp'; Defines = @('-DEFMT_ENABLE_HOSTED=0') },
         @{ Name = 'minimal (no float, 4 args)'; Source = 'efmt_tiny_build.cpp'; Defines = @('-DEFMT_ENABLE_HOSTED=0', '-DEFMT_ENABLE_FLOAT=0', '-DEFMT_MAX_FORMAT_ARGS=4') },
-        @{ Name = 'derive (built-in float)'; Source = 'efmt_derive_size_probe.cpp'; Defines = @('-DEFMT_ENABLE_HOSTED=0') }
+        @{ Name = 'derive (built-in float)'; Source = 'efmt_derive_size_probe.cpp'; Defines = @('-DEFMT_ENABLE_HOSTED=0') },
+        # ecli：同一份源码三条读数，差值就是命令行解析的代价
+        @{ Name = 'cli baseline (decl only)'; Source = 'ecli_size_probe.cpp'; Defines = @('-DEFMT_ENABLE_HOSTED=0', "-I$root", '-DECLI_SIZE_PROBE_OFF=1') },
+        @{ Name = 'cli parse'; Source = 'ecli_size_probe.cpp'; Defines = @('-DEFMT_ENABLE_HOSTED=0', "-I$root") },
+        @{ Name = 'cli parse + help/error'; Source = 'ecli_size_probe.cpp'; Defines = @('-DEFMT_ENABLE_HOSTED=0', "-I$root", '-DECLI_SIZE_PROBE_HELP=1') }
     )
     foreach ($target in $targets) {
         $compiler = Get-Command $target.Cxx -ErrorAction SilentlyContinue

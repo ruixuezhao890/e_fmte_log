@@ -16,6 +16,7 @@
 #include <eserde/serde.hpp>       // 可选基座：能力标签查询 + schema（efmt 本体不认识它）
 #include <eserde/json.hpp>        // JSON 序列化 / 反序列化（构建在基座上）
 #include <eserde/cbor.hpp>        // CBOR 二进制（RFC 8949 子集，写出的字节标准解码器能读）
+#include <ecli/cli.hpp>           // 命令行解析（声明即推导；argv 与"一行文本"同一条路）
 
 // ETL：sandbox 显式依赖（CMakeLists.txt 的 ETL_ROOT），elog 已把 ETL 常用类型
 // 接进格式化（etl::string / etl::vector / etl::optional / etl::pair / etl::variant...）
@@ -31,6 +32,7 @@
 
 using namespace e_fmt;
 using namespace eserde;
+using namespace ecli;
 
 // ============================================================================
 // 自定义类型：四种注册写法
@@ -69,6 +71,17 @@ E_FMT_DERIVE(struct person {              // ⑤ 声明即推导 + 字段标签 
 }, Debug, Serialize, Deserialize);        //    能力标签：原样登记，efmt 本体只认 Debug
                                           //    写要 Serialize、读要 Deserialize（缺了编译期报错）
 
+
+// ⑥ 命令行参数：声明即推导解析器（对标 Rust clap 的 #[derive(Parser)]）。
+//    字段名一个都不用写，标签就是 clap 的 #[arg(...)]：short / long / pos / help / required / skip。
+//    解析器不认识 argv —— 它只认识 token 表，所以串口 / 蓝牙 / 键盘的"一行文本"走同一个入口。
+E_FMT_DERIVE(struct cli_args {
+  [[efmt::arg(short, long, help = "verbose output")]]              bool verbose = false;
+  [[efmt::arg(short = "o", long = "output", help = "dump file")]]  const char *out = nullptr;
+  [[efmt::arg(short = "l", long = "level", help = "0..9")]]        int level = 3;
+  [[efmt::arg(long = "tag", help = "repeatable")]]                 std::vector<std::string> tags;
+  [[efmt::arg(pos = "1", help = "input file")]]                    std::string input;
+}, Cli);
 
 // ============================================================================
 // 小工具
@@ -213,6 +226,35 @@ int main() {
   // elog 对用户默认打开容器格式（EFMT_ENABLE_CONTAINER_FORMAT=1），
   // MCU 上打 etl::vector 无需任何配置。
   ELOG_INFO("dev={} raw={} temp={}", dev, raw, temp);
+
+  // ============================================================================
+  // ecli：命令行解析（宿主 argv 与设备端"一行文本"共用同一个解析器）
+  // ============================================================================
+  section("ecli 命令行解析");
+  {
+    cli_args a{};
+    const char *argv[] = {"sandbox", "-vo", "dump.bin", "--level=7", "--tag", "net", "input.txt"};
+    ecli::error_info info{};
+    const ecli::error e = ecli::parse(7, argv, a, &info);
+    check("argv 解析", ecli::error_name(e), "ok");
+    check("短选项聚簇 + 粘连取值", a.verbose ? "true" : "false", "true");
+    check("取值与可重复项", text("{}|{}|{}", a.out, a.level, a.tags[0]), "dump.bin|7|net");
+    check("位置参数", a.input, "input.txt");
+
+    // 设备端：串口 / 蓝牙 / 键盘读进来的就是"一行文本"，同一个解析器、同一套标签
+    cli_args b{};
+    char line_scratch[ECLI_MAX_LINE];
+    const ecli::error e2 =
+        ecli::parse("--level 9 \"in put.txt\"", b, line_scratch, sizeof(line_scratch), &info);
+    check("一行文本解析", ecli::error_name(e2), "ok");
+    check("引号包住的空格算一个 token", b.input, "in put.txt");
+
+    // 帮助 / 报错：snprintf 语义写进缓冲区 —— 谁问的就回给谁（串口问的回串口）
+    std::printf("%s\n", ecli::help_string<cli_args>("sandbox", "efmt sandbox CLI").c_str());
+    cli_args c{};
+    const ecli::error e3 = ecli::parse("--level=abc", c, line_scratch, sizeof(line_scratch), &info);
+    std::printf("%s\n", ecli::error_string<cli_args>("sandbox", e3, info).c_str());
+  }
 
   std::printf("\n%d/%d checks passed\n", g_checks - g_failures, g_checks);
   return g_failures == 0 ? 0 : 1;
