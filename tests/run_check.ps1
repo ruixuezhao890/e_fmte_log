@@ -351,15 +351,15 @@ if (Test-Path $ecli) {
     Invoke-EfmtCompileFail -Name 'cli args without the Cli capability' -ExpectedPattern '这个类型不能做命令行参数' -Arguments @('-std=c++17', '-O2', "-I$include", "-I$root", (Join-Path $PSScriptRoot 'ecli_compile_fail_caps.cpp'), '-o', (Join-Path $out 'compile_fail_cli_caps.exe'))
 }
 
-# sandbox：CLion 试玩工程也是库的消费者 —— 一起编一遍、跑一遍。
+# sandbox：CLion 试玩工程也是库的消费者 —— 一起编一遍，再跑一遍它的冒烟（--check）。
 # 它曾经在"能力门禁生效"后静默烂掉（没人编它），这一步就是防这个。
 if ($hasEtl -and (Test-Path (Join-Path $root 'sandbox\main.cpp'))) {
     $sandboxExe = Join-Path $out 'sandbox_check.exe'
     $sandboxArgs = @('-std=c++17') + $baseArgs + @("-I$root", '-DEFMT_DERIVE_SHOW_TYPE=0', (Join-Path $root 'sandbox\main.cpp'), '-o', $sandboxExe)
     # 注意带 --check：sandbox 不带参数时进的是【交互命令台】（等人敲命令），
-    # 那会让测试卡在等输入；--check 明确只跑自动自检。
-    if (Invoke-EfmtBuild 'sandbox walkthrough (CLion playground, consumer of everything)' $sandboxArgs) {
-        Invoke-EfmtRun 'sandbox walkthrough' $sandboxExe -ExeArgs @('--check')
+    # 那会让测试卡在等输入；--check 把命令表当脚本跑一遍，只看有没有异常。
+    if (Invoke-EfmtBuild 'sandbox console (CLion playground, consumer of everything)' $sandboxArgs) {
+        Invoke-EfmtRun 'sandbox console' $sandboxExe -ExeArgs @('--check')
     }
 }
 

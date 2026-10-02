@@ -46,7 +46,7 @@ ecli/elog_reply.hpp   可选层：命令回复接到 elog 的 sink（不 include
 matchit/matchit.h     第三方冻结副本：Rust match 表达式的 C++ 移植（Apache-2.0，改动见 matchit/PATCHES.md）
 docs/EFMT-使用手册.md  完整新手手册（18 章）——新用户从这里开始
 tests/                零框架行为检查 + 浮点差分对拍 + 基准 + 编译期反例
-sandbox/              CLion 试玩工程（打开即跑，20 条自检走查）
+sandbox/              CLion 试玩工程（打开即跑：手玩命令台，敲一条命令看一段输出）
 ```
 
 ## 如何加入你的项目
@@ -238,7 +238,7 @@ Windows / Linux / **ESP-IDF 走宿主配置**（容器、std::string、ANSI、st
 |---|---|
 | [docs/EFMT-使用手册.md](docs/EFMT-使用手册.md) | **完整使用手册（新手向，18 章）**：上手指南、格式规范全语法、嵌入式配置、Flash/RAM/栈实测、浮点、FAQ、printf 迁移对照、elog 集成、API 速查 |
 | [efmt/core/README.md](efmt/core/README.md) | 模块索引、版本要点（v1.4~v1.7 逐版说明） |
-| [sandbox/](sandbox/README.md) | CLion 试玩工程：打开即跑，19 条自检，覆盖主要 API 与 ETL 类型 |
+| [sandbox/](sandbox/README.md) | CLion 试玩工程：打开即跑，手玩命令台（敲一条命令看一段输出），覆盖主要 API 与 ETL 类型 |
 | [tests/](tests/run_check.ps1) | 验证脚本：行为检查、浮点对拍、嵌入式交叉编译体积报告 |
 
 ## 性能

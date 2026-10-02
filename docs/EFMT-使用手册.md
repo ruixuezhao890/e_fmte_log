@@ -1600,6 +1600,9 @@ E_FMT_FORMATTER_FN(Rgb, [](format_context& ctx, const format_specs&, const Rgb& 
 ② 声明里出现了 `#if`/`#include`/宏调用，或字段数超过 `EFMT_DERIVE_MAX_FIELDS`（默认 16）→
 改用类型内一行 `E_FMT_FIELDS(字段, ...)`。错误信息里会给出这两条出路。
 
+③ **空结构体**（`struct X {}`）—— 推导至少要有一个字段。做"无参数"的命令参数类型时，
+放一个 `[[efmt::arg(skip)]] int unused = 0;` 占位即可（`skip` 不进命令行）。
+
 **Q26：`E_FMT_DERIVE` 打出来没有类型名？**
 默认关（`EFMT_DERIVE_SHOW_TYPE=0`），输出 `{ ax = 1.5 }`，比带类型名省 **1.35 KB Flash**
 （Cortex-M4 实测）。想要 Rust 那种 `imu { ax = 1.5 }` 就设 `EFMT_DERIVE_SHOW_TYPE=1`。
@@ -1656,6 +1659,12 @@ E_FMT_FORMATTER_FIELDS(app::cfg, retry, verbose); // ✗ 宏在全局 → 编译
 **Q24：自动派生的宏为什么不能写在别的命名空间里？**
 库靠 ADL（实参相关查找）找 `efmt_derive_format`，而 ADL 只搜索"实参类型所属的命名空间"。
 把宏写在类型所在的命名空间（类型在全局就写在全局）即可。
+
+**Q30：ecli 里用 `const char*` 接取值，打出来是"后面一长串"？**
+`const char*` 是**零拷贝**指向输入缓冲（见 5.10 的取值表），它不带长度：argv 那条路每个
+token 自带结尾 `0`，打出来正好；而"一行文本"（串口 / 蓝牙 / `line_reader`）里的 token 只是
+**视图**，当 C 字符串打会一直读到**行尾**。走"一行文本"这条路时字段请用 `etl::string<N>` /
+`std::string`（装不下会如实报 `value_too_long`，不静默截断）。
 
 ---
 
