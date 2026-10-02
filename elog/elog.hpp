@@ -168,6 +168,12 @@ public:
   [[nodiscard]] level current_level() const { return level_; }
   [[nodiscard]] bool has_sink() const { return sink_.is_valid(); }
 
+  // 已经绑在 logger 上的那条输出通道 —— 「一次绑定，多处使用」的取用口：
+  // 别的消费者（命令回复、自定义打印……）拿它复用同一条通道，不必再绑一次。
+  // 返回【引用】是有意的：sink 副本活在 logger 里（注册表的静态存储），复用者
+  // 取到的地址必须落在 logger 身上，而不是某个临时副本上（副本当场就没了）。
+  [[nodiscard]] const sink &output_sink() const { return sink_; }
+
   void set_level(level value) { level_ = value; }
   void set_sink(const sink &value) { sink_ = value; }
 

@@ -289,7 +289,8 @@ static void skip_bom() {
 static int run_console() {
   char scratch[ECLI_MAX_LINE];
   ecli::line_reader<128> source;
-  const ecli::reply out = ecli::elog_stdout_reply();   // 答复出口 = elog 的 stdout sink
+  // 答复出口 = 日志已经绑好的那条通道（main 里 create_logger 绑的）—— 不再绑第二次
+  const ecli::reply out = ecli::reply_to_default_logger();
 
   out.put_lit("\nsandbox —— 敲一条命令，看一段输出（help 看全部，quit 退出）\n"
               "  num 42         数字：十进制 / 0x / 0b / 补零 / 对齐\n"
@@ -322,7 +323,8 @@ static int run_console() {
 
 // 宿主工具那条路：argv 直接分发（同一个命令表、同一个解析器）
 static int run_once(int argc, char **argv) {
-  const ecli::reply out = ecli::elog_stdout_reply();
+  // 同上：argv 这条路也复用那条通道，没有第二次绑定
+  const ecli::reply out = ecli::reply_to_default_logger();
   const ecli::error e = ecli::dispatch(kCommands, argc, argv, out);
   if (e == ecli::error::version_requested) out.put(ecli::version_string("sandbox", kVersion));
   // help / version 不是失败（和 clap 一样：打完帮助/版本退 0）

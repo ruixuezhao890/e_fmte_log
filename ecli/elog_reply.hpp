@@ -18,15 +18,30 @@
  *                     回串口）。sink 恰好就是 elog 的字节出口（(data,size) 写函数），
  *                     语义完全对得上：
  *                       * 日志行   → ELOG_INFO / ELOG_ERROR（有级别、有来源）
- *                       * 命令回复 → ecli::reply_to_sink(sink)（原样、不经日志格式）
+ *                       * 命令回复 → ecli::reply_to_logger(lg) / reply_to_sink(sink)
+ *                         （原样、不经日志格式）
  *
- *                   用法：
+ *                   用法（首选：复用日志已经绑好的那条通道）：
+ *                     ecli::dispatch(kCommands, line.line(), scratch, sizeof(scratch),
+ *                                    ecli::reply_to_logger(*lg));         // 回复原样走 lg 的 sink
+ *
+ *                    手上有裸 sink（没建 logger / 想另指一路）时：
  *                     e_log::sink uart = e_log::make_sink(&uart_write);   // 或 elog 的 stdout_sink()
  *                     ecli::dispatch(kCommands, line.line(), scratch, sizeof(scratch),
  *                                    ecli::reply_to_sink(uart));          // 回复原样走 elog 的 sink
  *
  *                    只想"回 stdout"就用 ecli::elog_stdout_reply()（内部持有一个静态 sink，
  *                    不会踩临时对象悬垂）。
+ *
+ *                   【一次绑定，多处使用】——本仓库对"输出通道"的总规矩：
+ *                     通道只在 elog 那一处定义/绑定一次（sink = 你的 (data, size) 写函数），
+ *                     日志、命令回复、别的消费者全都复用【同一个已绑定的对象】，不再各绑一次。
+ *                     写法就是把 logger 拿出来直接问它要通道：
+ *                       e_log::logger *lg = e_log::create_logger("app", e_log::make_sink(&uart_write));
+ *                       ELOG_LOGGER_INFO(*lg, "boot {}", 1);                    // 日志
+ *                       dispatch(kCommands, line, scratch, sizeof(scratch),
+ *                                ecli::reply_to_logger(*lg));                   // 回复：同一条通道
+ *                     通道是 multi_sink 时，这里连"扇出到串口+蓝牙+屏幕"也一并白拿。
  *
  *                   两条硬约束：
  *                     1. reply 只存指针 —— sink 必须比这次 dispatch 活得久
@@ -64,6 +79,22 @@ inline reply reply_to_sink(const e_log::sink &out) {
 
 // 传临时 sink 会在 dispatch 期间悬垂（reply 只存指针）—— 编译期就拦掉，别等运行时
 reply reply_to_sink(e_log::sink &&) = delete;
+
+// 「一次绑定，多处使用」的主入口：日志已经绑在哪条通道上，回复就走哪条 —— 不再绑第二次。
+//   e_log::logger *lg = e_log::create_logger("app", e_log::make_sink(&uart_write));
+//   dispatch(kCommands, line, scratch, sizeof(scratch), reply_to_logger(*lg));
+// 连接口都不用另写：通道若在 logger 上写成 multi_sink，回复自动跟着扇出到多路。
+// 生命周期天然成立：sink 由 logger 持有（注册表的静态存储），比任何一次 dispatch 都活得久。
+inline reply reply_to_logger(const e_log::logger &target) {
+  return reply_to_sink(target.output_sink());
+}
+
+// logger 指针不在手边时的便利版：取当前默认 logger 的那条通道
+// （create_logger 建的第一个就是默认；一次都没建过 = 丢弃输出，与 reply{} 同语义，不崩）。
+inline reply reply_to_default_logger() {
+  const e_log::logger *target = e_log::default_logger();
+  return target != nullptr ? reply_to_sink(target->output_sink()) : reply{};
+}
 
 // 最常用的一种：回复直接写 stdout，但出口仍然是 elog 的 stdout sink
 inline reply elog_stdout_reply() {

@@ -6,6 +6,8 @@
  *                   钉住的重点是【回复 = 原样字节】：不加级别前缀、不补换行、多行整块送达。
  *                   这正是回复走 sink 而不是 logger 的原因（logger 会加前缀、补换行，
  *                   整行超过 ELOG_MAX_RECORD_SIZE 还会整行丢弃 —— 多行 usage 会被吃掉）。
+ *                   第 6 段钉的是【一次绑定，多处使用】：日志绑好的那条通道，命令回复直接
+ *                   复用 logger::output_sink()，不再绑第二次（且日志/回复在通道上仍各是各的格式）。
  ******************************************************************************
  */
 
@@ -114,6 +116,37 @@ int main() {
 
   // 5) elog_stdout_reply()：宿主便利入口，构造出来就是有效通道（这里不真的往 stdout 写）
   check("elog_stdout_reply 有效", elog_stdout_reply().valid());
+
+  // 6) 一次绑定，多处使用：通道只在 create_logger 那一次绑定，日志与命令回复复用它
+  {
+    sink_state bound;
+    const e_log::sink shared = e_log::make_sink(&collect, &bound);
+    e_log::logger *lg = e_log::create_logger("one-bind", shared, e_log::level::trace);
+    check("create_logger 成功", lg != nullptr);
+
+    if (lg != nullptr) {
+      ELOG_LOGGER_INFO(*lg, "hello {}", 42);
+      const std::size_t after_log = bound.text.size();
+      check("日志走这条通道", contains(bound.text, "hello 42"), bound.text);
+      check("日志那一路带级别前缀", contains(bound.text, "[info]"), bound.text);
+
+      // 回复复用同一条通道：原样字节、不加前缀、不补换行，接在日志后面
+      const error e = dispatch(kCommands, "status", scratch, sizeof(scratch),
+                               reply_to_logger(*lg));
+      check("reply_to_logger 返回 ok", e == error::ok, error_name(e));
+      check("回复复用同一条通道且原样", bound.text.substr(after_log) == "link: up\n",
+            bound.text.substr(after_log));
+
+      // 便利入口：默认 logger = 第一个建出来的那个，指向同一条通道
+      const std::size_t after_reply = bound.text.size();
+      const reply via_default = reply_to_default_logger();
+      check("reply_to_default_logger 有效", via_default.valid());
+      check("reply_to_default_logger 回同一条通道",
+            dispatch(kCommands, "status", scratch, sizeof(scratch), via_default) == error::ok &&
+                bound.text.substr(after_reply) == "link: up\n",
+            bound.text.substr(after_reply));
+    }
+  }
 
   std::printf("%d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;
