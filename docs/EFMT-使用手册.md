@@ -931,6 +931,7 @@ dispatch(kCommands, argc, argv, stdout_reply());                                
 | `buffer_reply{rbuf, sizeof(rbuf)}` + `.as_reply()` | 写进定长缓冲（snprintf 语义，永远 NUL 结尾）|
 | `stdout_reply()` | 宿主调试（`EFMT_ENABLE_STDIO`）|
 | `string_reply(s)` | 宿主：追加到 `std::string`（`EFMT_ENABLE_DYNAMIC_STRING`）|
+| `reply_to_sink(elog 的 sink)` | 出口是 elog 的输出后端（`ecli/elog_reply.hpp`，回复仍原样）|
 | `reply{}` | 丢弃输出（命令照跑，用于只跑副作用的场合）|
 
 #### 命令名里的模式段（`:参数` / `*余下`，由 matchit 做匹配）
@@ -993,6 +994,35 @@ usage + 选项表（命令自己的 `help` 字段作为说明）。这四个词�
 一份 `parse<Args>` 实例**（就是 8.2c 里"每个参数类型一份"的量级，命令多时看得见，
 想省就把多个命令合并到同一个参数类型上）。帮助文本比 `ECLI_REPLY_BUFFER`（默认 384 B）
 长时会如实追加 `...(truncated)`，不静默丢。
+
+#### 命令回复接到 elog：`ecli/elog_reply.hpp`（可选）
+
+本仓库的分工：**文本格式化一律 efmt，文本输出一律 elog**。ecli 的回复天生是一串字节，
+正好对上 elog 的 `sink`（它的 `(data, size)` 出口），于是命令行这一层的输出也有了统一去处：
+
+```cpp
+#include <ecli/elog_reply.hpp>          // 可选层：不 include 就是零开销
+
+e_log::sink uart = e_log::make_sink(&uart_write);            // 或 e_log::stdout_sink()
+dispatch(kCommands, line.line(), scratch, sizeof(scratch),
+         ecli::reply_to_sink(uart));                         // 回复原样走 elog 的 sink
+
+dispatch(kCommands, argc, argv, ecli::elog_stdout_reply());  // 只想回 stdout
+```
+
+**为什么回复走 `sink`，不走 `logger`**：`logger::log` 是日志语义 —— 固定加
+`[级别] [文件:行 函数] ` 前缀、自己补换行、整行超过 `ELOG_MAX_RECORD_SIZE`（默认 384 B）
+就**整行丢弃**。而 usage / help 是多行整块文本，它的上限是调用方的缓冲区，还要回给"发起命令
+的那一路"（串口问的回串口）。分界很清楚：
+
+| 内容 | 走哪条 |
+|---|---|
+| 日志行 / 诊断（要级别、要来源） | `ELOG_INFO` / `ELOG_WARN` / `ELOG_ERROR` |
+| 命令回复（usage / help / 报错 / 命令自己回的话） | `reply_to_sink(sink)` —— 原样字节 |
+
+生命周期：`reply` 只存指针，sink 必须比这次 `dispatch` 活得久；传临时 sink
+（`reply_to_sink(e_log::stdout_sink())`）会被**删除重载当场拦成编译错误**，不会留到运行时崩。
+include 这个头 = 同时需要 elog 与它依赖的 ETL。
 
 ---
 
@@ -1266,6 +1296,10 @@ static_assert(!EFMT_ENABLE_ANSI_STYLES, "嵌入式不要往串口发转义序列
   想省就把多个命令合并到同一个参数类型上。
 - **命令名模式段（matchit）本体约 0.6 KB**（10580 - 9924）；捕获注入与 `params` 管线约 0.24 KB
   （9924 vs 集成前的 9684）。不用模式命令就 `-DECLI_ENABLE_PATTERN_COMMANDS=0`，一次省回来。
+- **回复接到 elog 的 sink 几乎零代价**：同一份命令表，把 `reply_to<写函数>()` 换成
+  `reply_to_sink(elog 的 sink)`（`ecli/elog_reply.hpp`）实测 10580 → **10624 B**，只多 **44 B**，
+  RAM 一分不涨（data/bss 与原来一模一样，elog 的注册表根本没被拉进来）—— 不 include 这个头
+  就是一行代码都不进固件；`elog_stdout_reply()` 同理。
 - 一个反例记在这：捕获注入最初用 `eserde::find_field` 按名字查字段，结果把 efmt 的
   **声明原文解析函数**（`struct_field_at` 等）拖进固件 —— 一个类型约 1.5 KB。改成查编译期那张
   规格表（rodata 里的 `option_view.field`）后，命令表从 13496 降回 **10580**。
@@ -1674,6 +1708,9 @@ ELOG_INFO("temp={:.1f}", t);      // 自动带上文件/行号/函数
 * **调试初期 / 一次性打印**：`println_info`、`println_debug` 一行搞定，零概念；
 * **要上线、要分级、要能关日志**：用 elog，`ELOG_*` 走默认 logger，`ELOG_LOGGER_*` 指定
   logger，还能 `set_level` 在运行期切换。
+* **要给"人"看的整块文本**（usage / help / 报错）：两条都别硬塞 —— 走回复通道
+  `ecli::reply_to_sink(elog 的 sink)`（见 5.11 末尾的 `ecli/elog_reply.hpp`），
+  原样字节，不受"单行 384 B"约束。
 
 两者可以**输出到同一条通道**：`e_log::stdout_sink()` 内部用的就是 efmt 的全局输出处理器
 （`get_output_handler()`），同一条串口上混用不打架。

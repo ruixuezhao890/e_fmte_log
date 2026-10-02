@@ -23,7 +23,7 @@ UART / RTT / ITM / SD 卡 / 任意缓冲区。
 | CBOR | `eserde::cbor`：RFC 8949 子集（定长头 / 最短整数编码 / `0xFA`·`0xFB` 浮点含 **NaN·Inf 原样传**）；**写出的字节标准解码器直接能读**，黄金字节对拍 RFC 附录 A；与 JSON 共用一套语义，标签换 `cbor = "别名"` / `"skip"` |
 | 能力门禁 | `write_to` 要 `Serialize`、`read_from` 要 `Deserialize`，缺了**编译期报错**（含嵌套成员）；标量 / 枚举 / 容器是基础类型不需要标签 |
 | 命令行解析 | `ecli/`：对标 Rust `clap` 的 derive 用法 —— `E_FMT_DERIVE(struct args{...}, Cli)` 声明即推导解析器 + 自动 usage/help/报错；**同一个解析器吃 argv 与串口/蓝牙/键盘的"一行文本"**；bool 开关 / `0x` 整数 / 枚举名 / 定长字符串（装不下报错不截断）/ 可重复容器 / `std::optional`；**别名、`-vvv` 计数、`--tag=a,b` 切分、`trailing` 尾随参数**；**关系约束 `needs`/`conflicts`/`unless`/`group` 编译期化成位掩码，运行时零字符串表**；零堆零异常零第三方 |
-| 命令表 | `ecli/command.hpp`：零堆静态表，**命令名带空格 = 子命令**，还支持**模式段** `"wifi set :ssid"`（捕获 → 注入同名字段）/ `"log *rest"`（余下全收）；匹配用第三方 [matchit.cpp](https://github.com/BowenFu/matchit.cpp) 的 extractor（`matchit/` 冻结副本，可 `-DECLI_ENABLE_PATTERN_COMMANDS=0` 裁掉）；处理函数 `void(const Args&, reply)` 或 `void(const Args&, const params&, reply)` —— reply 决定"谁问的回给谁"（argv→stdout / 串口→串口 / 蓝牙→蓝牙）；内置 `help` / `help <命令>` / `<命令> -h` |
+| 命令表 | `ecli/command.hpp`：零堆静态表，**命令名带空格 = 子命令**，还支持**模式段** `"wifi set :ssid"`（捕获 → 注入同名字段）/ `"log *rest"`（余下全收）；匹配用第三方 [matchit.cpp](https://github.com/BowenFu/matchit.cpp) 的 extractor（`matchit/` 冻结副本，可 `-DECLI_ENABLE_PATTERN_COMMANDS=0` 裁掉）；处理函数 `void(const Args&, reply)` 或 `void(const Args&, const params&, reply)` —— reply 决定"谁问的回给谁"（argv→stdout / 串口→串口 / 蓝牙→蓝牙）；内置 `help` / `help <命令>` / `<命令> -h`；回复可以接到 **elog 的 sink**（`ecli/elog_reply.hpp`，可选层）|
 | 分级日志 | ELog：trace→critical + off，多 logger 独立 sink、运行期 `set_level`，直接格式化 **ETL 类型**（`etl::string`/`vector`/`optional`/`variant` …） |
 
 ## 目录结构
@@ -42,10 +42,11 @@ eserde/cbor.hpp       CBOR（RFC 8949）子集：二进制序列化 / 反序列�
 eserde/eserde.hpp     汇总头：按 ESERDE_ENABLE_* 拉格式（可选）
 ecli/cli.hpp          命令行解析（构建在基座上：词法 + 取值 + 帮助/报错 + 行装配器）
 ecli/command.hpp      命令表：多命令 / 子命令 / 模式段（:param、*rest）分发 + 回复通道
+ecli/elog_reply.hpp   可选层：命令回复接到 elog 的 sink（不 include 就是零开销）
 matchit/matchit.h     第三方冻结副本：Rust match 表达式的 C++ 移植（Apache-2.0，改动见 matchit/PATCHES.md）
 docs/EFMT-使用手册.md  完整新手手册（18 章）——新用户从这里开始
 tests/                零框架行为检查 + 浮点差分对拍 + 基准 + 编译期反例
-sandbox/              CLion 试玩工程（打开即跑，19 条自检走查）
+sandbox/              CLion 试玩工程（打开即跑，20 条自检走查）
 ```
 
 ## 如何加入你的项目
@@ -323,7 +324,8 @@ E_FMT_DERIVE 34 项 × 2 配置、派生宏 28 项（宿主+嵌入式）、eserd
 eserde::json 28 项 × 2 配置 + ETL 7 项、eserde::cbor 93 项 × 2 配置 + ETL 7 项、
 ecli 命令行解析 114 项 × 2 配置 + 别名/计数/关系约束 39 项 × 2 配置 + ETL 16 项、
 ecli 命令表 52 项 × 2 配置、ecli 命令名模式段 16 项 × 3 配置（宿主 / 嵌入式 / 关掉模式开关）、
-浮点对拍 24.6 万次 0 失败、九个编译期反例按预期失败 —— 全部通过。
+ecli × elog 回复通道 11 项（需要 ETL）、
+浮点对拍 24.6 万次 0 失败、十个编译期反例按预期失败 —— 全部通过。
 
 > 需要 ETL 才能跑 elog 相关步骤：没接 ETL 时脚本会跳过并提示（`-EtlInclude` 指定位置）。
 

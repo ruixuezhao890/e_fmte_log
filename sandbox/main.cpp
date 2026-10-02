@@ -9,6 +9,12 @@
  *                   include 根由 CMakeLists.txt 接好（和 tests/run_check.ps1 一致）：
  *                     <repo>/tests/include → <middleware/efmt/...> <middleware/etl/...>
  *                     <repo>               → <elog/elog.hpp>
+ *
+ *                   输出规矩（本仓库）：文本【格式化】一律 efmt，文本【输出】一律 elog。
+ *                     * 日志行 / 自检行      → ELOG_INFO / ELOG_ERROR（带级别、带来源）
+ *                     * 命令回复（usage / help / 报错）→ ecli::reply_to_sink(elog 的 sink)：
+ *                       原样字节，不加日志前缀、不按行截断（多行文本必须整块送达）
+ *                     * 交互提示符（"> "）→ 原样字节：elog 每行必加前缀和换行，做不了提示符
  ******************************************************************************
  */
 
@@ -22,6 +28,7 @@
 #include <eserde/cbor.hpp>        // CBOR 二进制（RFC 8949 子集，写出的字节标准解码器能读）
 #include <ecli/cli.hpp>           // 命令行解析（声明即推导；argv 与"一行文本"同一条路）
 #include <ecli/command.hpp>       // 命令表：多命令 / 子命令 / 命令名模式段（:param、*rest）
+#include <ecli/elog_reply.hpp>    // 可选层：命令【回复】接到 elog 的 sink（日志行另走 ELOG_*）
 #include <matchit/matchit.h>      // 第三方（matchit/ 冻结副本）：这里【直接用】它的 match 表达式
                                   // 注意：ecli 内部也用它做模式段匹配，但 sandbox 这行是独立使用
 
@@ -175,17 +182,19 @@ static std::string text(std::string_view fmt_str, const Args &...args) {
   return std::string(buf, n);
 }
 
+// 自检行的【格式化】交给 efmt（{:<22} 左对齐），【输出】交给 elog：
+// 一行一条记录 —— 通过是 info，失败是 error，过滤日志时一眼能筛出来。
 static void check(const char *what, const std::string &actual, const char *wanted) {
   ++g_checks;
   if (actual == wanted) {
-    std::printf("  OK   %-22s %s\n", what, actual.c_str());
+    ELOG_INFO("  OK   {:<22} {}", what, actual);
     return;
   }
   ++g_failures;
-  std::printf("  FAIL %-22s actual=[%s] wanted=[%s]\n", what, actual.c_str(), wanted);
+  ELOG_ERROR("  FAIL {:<22} actual=[{}] wanted=[{}]", what, actual, wanted);
 }
 
-static void section(const char *title) { std::printf("\n--- %s ---\n", title); }
+static void section(const char *title) { ELOG_INFO("--- {} ---", title); }
 
 // ============================================================================
 // ⑧ 验收用的命令台：亲手敲命令（默认不进，run_check 跑这个程序时不会卡在等输入）
@@ -222,21 +231,19 @@ static void section(const char *title) { std::printf("\n--- %s ---\n", title); }
 //     -V  或  --version   → version_requested（版本行由 sandbox 自己打出来）
 //
 // 【为什么这条路和真机是同一条】stdin 的字节是【一个字节一个字节】喂进 ecli::line_reader 的，
-//   跟串口 / 蓝牙收到字节、攒够一行再解析完全一样；回话走 reply 通道（这里接到 stdout，
-//   真机上换成 ecli::reply_to<uart_write>() 就回串口）。解析器不认识 argv —— 两条路同一份代码。
+//   跟串口 / 蓝牙收到字节、攒够一行再解析完全一样；回话走 reply 通道（这里的出口是
+//   ecli::elog_stdout_reply() = elog 的 stdout sink；真机上换成 ecli::reply_to<uart_write>()
+//   或 reply_to_sink(串口 sink) 就回串口）。解析器不认识 argv —— 两条路同一份代码。
 static constexpr const char *kSandboxVersion = "0.1.0-sandbox";
-static char g_repl_reply[512];
 
 // 一次性：argv → 分发（宿主工具用法）
 static int run_oneshot(int argc, char **argv) {
-  buffer_reply out{g_repl_reply, sizeof(g_repl_reply), 0};
-  const ecli::error e = ecli::dispatch(kCommands, argc, argv, out.as_reply());
+  // 回复直接写 stdout —— 但【出口是 elog 的 sink】（ecli::elog_stdout_reply()），不是 printf：
+  // ecli 只管"回给发起命令的那一路"，具体往哪写由 elog 决定（换串口就是换一个 sink）。
+  const ecli::reply out = ecli::elog_stdout_reply();
+  const ecli::error e = ecli::dispatch(kCommands, argc, argv, out);
   if (e == ecli::error::version_requested) {
-    char v[64];
-    ecli::write_version("sandbox", kSandboxVersion, v, sizeof(v));
-    std::printf("%s", v);
-  } else if (out.used != 0) {
-    std::printf("%s", g_repl_reply);
+    out.put(ecli::version_string("sandbox", kSandboxVersion));
   }
   // help / version 不是失败（和 clap 一样：打帮助/版本后退 0）
   const bool ok = e == ecli::error::ok || e == ecli::error::help_requested ||
@@ -248,13 +255,12 @@ static int run_oneshot(int argc, char **argv) {
 static int run_repl() {
   ecli::line_reader<128> source;   // 每个输入源一个行缓冲 —— 这里只有一个源
   char scratch[ECLI_MAX_LINE];
-  std::printf("sandbox 命令台 —— 一行一条命令、回车执行；quit / exit（或 Ctrl+Z 回车）退出\n\n");
-  {
-    buffer_reply out{g_repl_reply, sizeof(g_repl_reply), 0};   // 开局先把命令表列出来
-    ecli::write_command_list(kCommands, out.as_reply());
-    std::printf("%s\n", g_repl_reply);
-  }
-  std::printf("> ");
+  const ecli::reply out = ecli::elog_stdout_reply();   // 回复出口 = elog 的 stdout sink
+  ELOG_INFO("sandbox 命令台 —— 一行一条命令、回车执行；quit / exit（或 Ctrl+Z 回车）退出");
+  ecli::write_command_list(kCommands, out);            // 开局把命令表列出来（也是一条"回复"）
+  // 提示符必须【原样、不换行】贴在用户输入前面；elog 每行都要补
+  // "[级别] [文件:行 函数] " 前缀和一个换行，做不了提示符 —— 这里走原样字节。
+  std::fputs("> ", stdout);
   std::fflush(stdout);
   // 顺手容错：PowerShell / 文件管道会在最前面塞 UTF-8 BOM（EF BB BF），手动敲不会有
   static constexpr unsigned char kBom[3] = {0xEF, 0xBB, 0xBF};
@@ -268,24 +274,29 @@ static int run_repl() {
     if (!source.put(static_cast<char>(ch))) continue;   // 还没凑够一行
     const std::string_view cmd = source.line();
     if (cmd == "quit" || cmd == "exit") break;
-    buffer_reply out{g_repl_reply, sizeof(g_repl_reply), 0};
-    const ecli::error e = ecli::dispatch(kCommands, cmd, scratch, sizeof(scratch), out.as_reply());
+    const ecli::error e = ecli::dispatch(kCommands, cmd, scratch, sizeof(scratch), out);
     if (e == ecli::error::version_requested) {
-      char v[64];
-      ecli::write_version("sandbox", kSandboxVersion, v, sizeof(v));
-      std::printf("%s", v);
-    } else if (out.used != 0) {
-      std::printf("%s", g_repl_reply);
+      out.put(ecli::version_string("sandbox", kSandboxVersion));
     }
-    std::printf("  [%s]\n> ", ecli::error_name(e));
+    ELOG_INFO("[{}]", ecli::error_name(e));   // 状态行走日志（带级别、带来源）
+    std::fputs("> ", stdout);                 // 提示符原样
     std::fflush(stdout);
     source.clear();
   }
-  std::printf("\n");
+  std::putchar('\n');
   return 0;
 }
 
 int main(int argc, char **argv) {
+  // elog 先建：第一个创建的 logger 自动成为默认 logger，之后所有 ELOG_* 都走它。
+  // 【必须在第一次输出之前】—— 默认 logger 为空时 elog 会静默丢弃日志。
+  e_log::logger *const log =
+      e_log::create_logger("sandbox", e_log::stdout_sink(), e_log::level::debug);
+  if (log == nullptr) {
+    std::printf("create_logger failed\n");   // 日志都建不起来时，只能退回 printf
+    return 1;
+  }
+
   // 模式选择（默认就是给你敲命令的那个）：
   //   什么都不给            → 进命令台（交互，等你输入；EOF / quit / exit 退出）
   //   --repl                → 同上（显式写出来，管道喂脚本时可读性更好）
@@ -313,19 +324,19 @@ int main(int argc, char **argv) {
     .state = state::idle
   };
 
-  println_info("person info {}",p);
-  print_info("person info {:#}", p);
+  ELOG_INFO("person info {}", p);
+  ELOG_INFO("person info {:#}", p);
 
   // 基座：声明原文 → 编译期数据（能力标签 / schema / 字段标签）
   static_assert(eserde::has_cap_v<person, Serialize>, "person 带了 Serialize 能力标签");
   static_assert(eserde::has_cap_v<person, Deserialize>, "person 带了 Deserialize 能力标签");
   static_assert(eserde::find_by_tag<person>("short") == 3, "name 字段带 short 标签");
-  println_info("schema: {} 个字段；字段 3 的类型名 = {}，标签数 = {}",
-               eserde::field_count<person>(),
-               eserde::field_type_name<person>(3),
-               eserde::tag_count<person>(3));
+  ELOG_INFO("schema: {} 个字段；字段 3 的类型名 = {}，标签数 = {}",
+            eserde::field_count<person>(),
+            eserde::field_type_name<person>(3),
+            eserde::tag_count<person>(3));
   eserde::visit_fields(p, [](std::string_view field, const auto &) {
-    std::printf("  field %.*s\n", static_cast<int>(field.size()), field.data());
+    ELOG_INFO("  field {}", field);
   });
 
   // JSON：写→读一圈（eserde::json，零第三方、不抛异常）
@@ -333,15 +344,15 @@ int main(int argc, char **argv) {
   std::size_t json_len = eserde::json::write_to(json_buf, sizeof(json_buf), p);
   const bool json_fits = json_len < sizeof(json_buf);
   if (!json_fits) json_len = sizeof(json_buf) - 1;
-  println_info("json ({} B): {}", json_len, std::string_view(json_buf, json_len));
+  ELOG_INFO("json ({} B): {}", json_len, std::string_view(json_buf, json_len));
 
   person q{};
   const eserde::json::error je =
       eserde::json::read_from(std::string_view(json_buf, json_len), q);
   if (je == eserde::json::error::ok && json_fits) {
-    println_info("json round-trip: {}", q);
+    ELOG_INFO("json round-trip: {}", q);
   } else {
-    println_info("json round-trip skipped: {}", eserde::json::error_name(je));
+    ELOG_INFO("json round-trip skipped: {}", eserde::json::error_name(je));
   }
 
   // CBOR：同一个对象走二进制（同一套语义：snprintf 语义 / 失败不动原对象 / 错误码）
@@ -351,7 +362,7 @@ int main(int argc, char **argv) {
   if (!cbor_fits) {
     cbor_len = sizeof(cbor_buf) - 1;
   }
-  println_info("cbor ({} B；同样内容 json 是 {} B)", cbor_len, json_len);
+  ELOG_INFO("cbor ({} B；同样内容 json 是 {} B)", cbor_len, json_len);
 
   person r{};
   const eserde::cbor::error ce = eserde::cbor::read_from(cbor_buf, cbor_len, r);
@@ -359,18 +370,13 @@ int main(int argc, char **argv) {
     const std::string want = text("{}", p);
     check("cbor round-trip", text("{}", r), want.c_str());
   } else {
-    println_info("cbor round-trip skipped: {}", eserde::cbor::error_name(ce));
+    ELOG_INFO("cbor round-trip skipped: {}", eserde::cbor::error_name(ce));
   }
 
-  // elog：第一个创建的 logger 自动成为默认 logger，之后的 ELOG_* 宏都走它。
-  // 创建必须发生在第一次 ELOG_* 之前，否则默认 logger 为空、日志被静默丢弃。
-  if (!e_log::create_logger("etl-demo", e_log::stdout_sink(), e_log::level::debug)) {
-    std::printf("  create_logger failed\n");
-  }
-
-  const etl::vector<int,8> v ={1,2,3,4,5,6,7,8};
-  ELOG_INFO("vector print:{}",v);
-  ELOG_INFO("person info {}",p);
+  // elog（logger 已在 main 开头建好）：容器与自定义类型直接进日志
+  const etl::vector<int, 8> v = {1, 2, 3, 4, 5, 6, 7, 8};
+  ELOG_INFO("vector print:{}", v);
+  ELOG_INFO("person info {}", p);
 
 
   // ============================================================================
@@ -419,11 +425,14 @@ int main(int argc, char **argv) {
     check("一行文本解析", ecli::error_name(e2), "ok");
     check("引号包住的空格算一个 token", b.input, "in put.txt");
 
-    // 帮助 / 报错：snprintf 语义写进缓冲区 —— 谁问的就回给谁（串口问的回串口）
-    std::printf("%s\n", ecli::help_string<cli_args>("sandbox", "efmt sandbox CLI").c_str());
+    // 帮助 / 报错：snprintf 语义写进缓冲区 —— 谁问的就回给谁（串口问的回串口）。
+    // 多行整块文本走 reply（原样字节），不走 ELOG_INFO：日志是"一行一条记录"，
+    // 而且 elog 的整行上限（ELOG_MAX_RECORD_SIZE）装不下整份 help。
+    const ecli::reply out = ecli::elog_stdout_reply();
+    out.put(ecli::help_string<cli_args>("sandbox", "efmt sandbox CLI"));
     cli_args c{};
     const ecli::error e3 = ecli::parse("--level=abc", c, line_scratch, sizeof(line_scratch), &info);
-    std::printf("%s\n", ecli::error_string<cli_args>("sandbox", e3, info).c_str());
+    out.put(ecli::error_string<cli_args>("sandbox", e3, info));
   }
 
   // ============================================================================
@@ -433,14 +442,15 @@ int main(int argc, char **argv) {
   {
     char reply[256];
     char scratch[ECLI_MAX_LINE];
+    const ecli::reply out = ecli::elog_stdout_reply();   // 回复出口（同上）
     const char *lines[] = {"status -v", "wifi set mynet -p pw", "wifi set", "help wifi set", "nope"};
     for (const char *line : lines) {
       reply[0] = '\0';
       buffer_reply b{reply, sizeof(reply), 0};
       const ecli::error e = ecli::dispatch(kCommands, line, scratch, sizeof(scratch), b.as_reply());
-      std::printf("  $ %-18s [%s]\n", line, ecli::error_name(e));
+      ELOG_INFO("  $ {:<18} [{}]", line, ecli::error_name(e));   // 格式化 efmt、输出 elog
       if (reply[0] != '\0') {
-        std::printf("      %s", reply);            // 命令自己回的话（多行 help 原样打）
+        out.put(std::string_view(reply));   // 命令自己回的话：回复走 reply（原样、不受单行上限约束）
       }
     }
     reply[0] = '\0';
@@ -486,6 +496,6 @@ int main(int argc, char **argv) {
     }
   }
 
-  std::printf("\n%d/%d checks passed\n", g_checks - g_failures, g_checks);
+  ELOG_INFO("{}/{} checks passed", g_checks - g_failures, g_checks);
   return g_failures == 0 ? 0 : 1;
 }

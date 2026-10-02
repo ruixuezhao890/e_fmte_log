@@ -330,6 +330,18 @@ if (Test-Path $ecli) {
         Invoke-EfmtRun 'ecli patterns (off)' $patOffExe
     }
 
+    # ecli × elog：命令回复接到 elog 的 sink（需要 ETL —— elog 依赖 etl::array）
+    if ($hasEtl -and (Test-Path (Join-Path $root 'elog\elog.hpp'))) {
+        $elogReplyExe = Join-Path $out 'ecli_elog_check.exe'
+        $elogReplyArgs = @('-std=c++17') + $baseArgs + @("-I$root", (Join-Path $PSScriptRoot 'ecli_elog_check.cpp'), '-o', $elogReplyExe)
+        if (Invoke-EfmtBuild 'ecli x elog (reply sink)' $elogReplyArgs) {
+            Invoke-EfmtRun 'ecli x elog' $elogReplyExe
+        }
+
+        # Negative test: a temporary sink would dangle (reply stores a pointer)
+        Invoke-EfmtCompileFail -Name 'temporary elog sink handed to reply_to_sink' -ExpectedPattern 'deleted function' -Arguments @('-std=c++17', '-O2', "-I$include", "-I$root", (Join-Path $PSScriptRoot 'ecli_compile_fail_elog_temp.cpp'), '-o', (Join-Path $out 'compile_fail_cli_elog_temp.exe'))
+    }
+
     # Negative tests: duplicate option names / a relation tag pointing at a missing field
     Invoke-EfmtCompileFail -Name 'duplicate option names' -ExpectedPattern '选项名撞车' -Arguments @('-std=c++17', '-O2', "-I$include", "-I$root", (Join-Path $PSScriptRoot 'ecli_compile_fail_names.cpp'), '-o', (Join-Path $out 'compile_fail_cli_names.exe'))
 

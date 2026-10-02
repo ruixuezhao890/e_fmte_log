@@ -37,7 +37,22 @@ CMakeLists 里加了三条，前两条和 `tests/run_check.ps1` 用的完全一�
 
 再末尾是 `ecli 命令表` 自检段：一张 `constexpr` 表（`status` / 模式命令 `wifi set :ssid` / `level :n` / `echo`），
 依次分发 `status -v` / `wifi set -s mynet` / `wifi set`（必填缺失）/ `help wifi set` / `nope`（未知命令），
-输出全部走 `buffer_reply`（真实项目里换成 `reply_to<uart_write>()` 就回给串口）。
+回复用 `buffer_reply` 收下来做断言（真实项目里换成 `reply_to<uart_write>()` 就回给串口），
+`$ 命令 [状态]` 这类报告行本身走 `ELOG_INFO`。
+
+## 输出走哪条路（本仓库的规矩）
+
+**文本格式化一律 efmt，文本输出一律 elog**。sandbox 里分成三条路：
+
+| 内容 | 怎么出 |
+|---|---|
+| 日志行 / 自检行（`section` / `check` / 结果 / 命令状态） | `ELOG_INFO` / `ELOG_ERROR` —— 带级别与 `文件:行 函数` 前缀（失败行是 error 级），默认 logger 在 `main` 开头就建好 |
+| 命令回复（usage / help / 报错 / 命令自己回的话） | `ecli::elog_stdout_reply()`（= `ecli::reply_to_sink(elog 的 stdout sink)`）—— **原样字节**，不加日志前缀、不按行截断 |
+| 交互提示符 `"> "` | 原样字节（`std::fputs`）—— elog 每行都要补前缀和换行，做不了提示符 |
+
+回复为什么不塞进 `ELOG_INFO`：`logger::log` 是**日志语义**（固定前缀 + 自己补换行 + 整行超过
+`ELOG_MAX_RECORD_SIZE` 就整行丢弃），而 usage / help 是**多行整块文本**，长度上限是调用方的
+缓冲区。elog 的 `sink` 才是它的"字节出口"，语义正好对上 —— `ecli/elog_reply.hpp` 就这一个职责。
 
 ## 亲手敲命令验收（ecli 命令台）
 
@@ -64,7 +79,8 @@ CMakeLists 里加了三条，前两条和 `tests/run_check.ps1` 用的完全一�
 一次性模式（宿主工具那条路，argv 直接分发）：`./sandbox status -v`、`./sandbox wifi set -s m -p p`。
 
 > stdin 的字节是**逐字节**喂进 `ecli::line_reader` 的 —— 跟串口 / 蓝牙收到字节、攒够一行再解析
-> 完全是同一条路径；回话走 reply 通道（这里接 stdout，真机上换成 `ecli::reply_to<uart_write>()`）。
+> 完全是同一条路径；回话走 reply 通道（这里的出口是 `ecli::elog_stdout_reply()`，真机上换成
+> `ecli::reply_to<uart_write>()` 或 `ecli::reply_to_sink(串口 sink)`）。
 
 ## 跑
 
