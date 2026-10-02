@@ -8,13 +8,16 @@ UART / RTT / ITM / SD 卡 / 任意缓冲区。
 - 语言：C++17 及以上，单文件头 + 宏配置，无脚本、无生成器、无第三方依赖（EFmt 本体）
 - 许可：MIT（见 [LICENSE](LICENSE)）
 
+> **新手入口**：想先看效果 → [沙盒命令台：新手 10 分钟上手](docs/SANDBOX-命令台上手指南.md)（跑起来、敲一条命令、加自己的命令）；
+> 想用进工程 → [EFMT-使用手册.md](docs/EFMT-使用手册.md)（18 章完整手册）。全部文档见 [docs/README.md](docs/README.md)。
+
 ## 特性
 
 | | |
 |---|---|
 | 类型安全 | 格式串里的 `{}` 按类型匹配实参，`E_FMT_STR` 包住格式串可**编译期校验**参数个数，并把字段位置/格式规范**编译期预解析**（热路径免扫描、免逐字段解析） |
 | 格式规范 | `{:.2f}` `{:#06x}` `{:<12}` `{:>8}` 等完整规范（Python / std::format 风格） |
-| 输出路由 | 一个 `(const char*, size_t)` 回调：UART / RTT / ITM / SD / 缓冲区 / stdout 均可 |
+| 输出路由 | 一个 `(const char*, size_t)` 回调：UART / RTT / ITM / SD / 蓝牙 / 屏 / 缓冲区 / stdout 均可；接上 elog 后通道**只绑定一次**（`make_sink` / `multi_sink`），日志与命令回复共用同一条（**一次绑定，多处使用**，见手册 13.9）|
 | 自带浮点引擎 | 不依赖 libc printf、不用堆；与 printf **逐位一致**（24.6 万次随机差分对拍 0 失败），比 libc 快 40%+ |
 | 可裁剪 | 13 个开关宏；不打印浮点可关掉省 ~3.4 KB Flash；嵌入式默认配置开箱即用 |
 | 自定义类型 | 一行 `E_FMT_DERIVE(...)` 声明即推导字段/枚举名（对标 Rust `#[derive(Debug)]`），纯 C++17 实现；`E_FMT_DERIVE(声明, Debug, Serialize)` 的能力标签 + `[[efmt::arg(short, long)]]` 字段标签解析 |
@@ -23,7 +26,7 @@ UART / RTT / ITM / SD 卡 / 任意缓冲区。
 | CBOR | `eserde::cbor`：RFC 8949 子集（定长头 / 最短整数编码 / `0xFA`·`0xFB` 浮点含 **NaN·Inf 原样传**）；**写出的字节标准解码器直接能读**，黄金字节对拍 RFC 附录 A；与 JSON 共用一套语义，标签换 `cbor = "别名"` / `"skip"` |
 | 能力门禁 | `write_to` 要 `Serialize`、`read_from` 要 `Deserialize`，缺了**编译期报错**（含嵌套成员）；标量 / 枚举 / 容器是基础类型不需要标签 |
 | 命令行解析 | `ecli/`：对标 Rust `clap` 的 derive 用法 —— `E_FMT_DERIVE(struct args{...}, Cli)` 声明即推导解析器 + 自动 usage/help/报错；**同一个解析器吃 argv 与串口/蓝牙/键盘的"一行文本"**；bool 开关 / `0x` 整数 / 枚举名 / 定长字符串（装不下报错不截断）/ 可重复容器 / `std::optional`；**别名、`-vvv` 计数、`--tag=a,b` 切分、`trailing` 尾随参数**；**关系约束 `needs`/`conflicts`/`unless`/`group` 编译期化成位掩码，运行时零字符串表**；零堆零异常零第三方 |
-| 命令表 | `ecli/command.hpp`：零堆静态表，**命令名带空格 = 子命令**，还支持**模式段** `"wifi set :ssid"`（捕获 → 注入同名字段）/ `"log *rest"`（余下全收）；匹配用第三方 [matchit.cpp](https://github.com/BowenFu/matchit.cpp) 的 extractor（`matchit/` 冻结副本，可 `-DECLI_ENABLE_PATTERN_COMMANDS=0` 裁掉）；处理函数 `void(const Args&, reply)` 或 `void(const Args&, const params&, reply)` —— reply 决定"谁问的回给谁"（argv→stdout / 串口→串口 / 蓝牙→蓝牙）；内置 `help` / `help <命令>` / `<命令> -h`；回复可以接到 **elog 的 sink**（`ecli/elog_reply.hpp`，可选层）|
+| 命令表 | `ecli/command.hpp`：零堆静态表，**命令名带空格 = 子命令**，还支持**模式段** `"wifi set :ssid"`（捕获 → 注入同名字段）/ `"log *rest"`（余下全收）；匹配用第三方 [matchit.cpp](https://github.com/BowenFu/matchit.cpp) 的 extractor（`matchit/` 冻结副本，可 `-DECLI_ENABLE_PATTERN_COMMANDS=0` 裁掉）；处理函数 `void(const Args&, reply)` 或 `void(const Args&, const params&, reply)` —— reply 决定"谁问的回给谁"（argv→stdout / 串口→串口 / 蓝牙→蓝牙）；内置 `help` / `help <命令>` / `<命令> -h`；回复**复用日志已经绑好的那条通道**（`ecli::reply_to_logger(*lg)` / `reply_to_default_logger()`，`ecli/elog_reply.hpp` 可选层）—— 一次绑定，多处使用 |
 | 分级日志 | ELog：trace→critical + off，多 logger 独立 sink、运行期 `set_level`，直接格式化 **ETL 类型**（`etl::string`/`vector`/`optional`/`variant` …） |
 
 ## 目录结构
@@ -42,11 +45,15 @@ eserde/cbor.hpp       CBOR（RFC 8949）子集：二进制序列化 / 反序列�
 eserde/eserde.hpp     汇总头：按 ESERDE_ENABLE_* 拉格式（可选）
 ecli/cli.hpp          命令行解析（构建在基座上：词法 + 取值 + 帮助/报错 + 行装配器）
 ecli/command.hpp      命令表：多命令 / 子命令 / 模式段（:param、*rest）分发 + 回复通道
-ecli/elog_reply.hpp   可选层：命令回复接到 elog 的 sink（不 include 就是零开销）
+ecli/elog_reply.hpp   可选层：命令回复复用 elog 已绑定的通道（reply_to_logger / reply_to_sink）
 matchit/matchit.h     第三方冻结副本：Rust match 表达式的 C++ 移植（Apache-2.0，改动见 matchit/PATCHES.md）
-docs/EFMT-使用手册.md  完整新手手册（18 章）——新用户从这里开始
+docs/README.md        文档索引：先看哪一份（新手从这里挑）
+docs/SANDBOX-命令台上手指南.md  沙盒命令台：10 分钟跑起来 / 敲起来 / 加自己的命令
+docs/EFMT-使用手册.md  完整手册（18 章）：格式化 / 日志 / 序列化 / 命令行 / 裁剪宏 / 体积实测
+docs/ECLI-*.md        ecli 的设计方案与和 clap 的差距清单
 tests/                零框架行为检查 + 浮点差分对拍 + 基准 + 编译期反例
-sandbox/              CLion 试玩工程（打开即跑：手玩命令台，敲一条命令看一段输出）
+sandbox/              CLion 试玩工程（clone 即可编：CMake 自建 include 形状；ETL 靠 -DETL_ROOT= 或相邻目录）
+                      打开即跑的手玩命令台，敲一条命令看一段输出（上手指南见 docs/SANDBOX-命令台上手指南.md）
 ```
 
 ## 如何加入你的项目

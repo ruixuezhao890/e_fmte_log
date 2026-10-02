@@ -2,6 +2,9 @@
 
 > 面向第一次接触 EFmt 的嵌入式开发者：从"复制粘贴就能跑"到"知道每个宏花多少 Flash"。
 > 版本：v1.8（elog 支持 ETL 类型） · 适用 C++17 及以上 · 头文件库，无构建系统依赖
+>
+> 想先"跑起来看效果"再翻手册 → [沙盒命令台：新手 10 分钟上手](SANDBOX-命令台上手指南.md)（含 ecli 命令表、分级日志、JSON/CBOR 的可运行例子）。
+> 所有文档的入口 → [文档索引](README.md)。
 
 ---
 
@@ -931,6 +934,8 @@ dispatch(kCommands, argc, argv, stdout_reply());                                
 | `buffer_reply{rbuf, sizeof(rbuf)}` + `.as_reply()` | 写进定长缓冲（snprintf 语义，永远 NUL 结尾）|
 | `stdout_reply()` | 宿主调试（`EFMT_ENABLE_STDIO`）|
 | `string_reply(s)` | 宿主：追加到 `std::string`（`EFMT_ENABLE_DYNAMIC_STRING`）|
+| `reply_to_logger(*lg)` | **首选**：复用日志已经绑好的那条通道（`ecli/elog_reply.hpp`），不再绑第二次 |
+| `reply_to_default_logger()` | 同上；logger 指针不在手边时直接取默认 logger 的通道 |
 | `reply_to_sink(elog 的 sink)` | 出口是 elog 的输出后端（`ecli/elog_reply.hpp`，回复仍原样）|
 | `reply{}` | 丢弃输出（命令照跑，用于只跑副作用的场合）|
 
@@ -1003,11 +1008,17 @@ usage + 选项表（命令自己的 `help` 字段作为说明）。这四个词�
 ```cpp
 #include <ecli/elog_reply.hpp>          // 可选层：不 include 就是零开销
 
+// 首选：日志绑在哪条通道上，回复就走哪条 —— 一次绑定，多处使用
+e_log::logger *app = e_log::create_logger("app", e_log::make_sink(&uart_write));
+dispatch(kCommands, line.line(), scratch, sizeof(scratch),
+         ecli::reply_to_logger(*app));                       // 回复原样走 app 那条通道
+dispatch(kCommands, argc, argv, ecli::reply_to_default_logger());  // 指针不在手边：默认 logger 那条
+dispatch(kCommands, argc, argv, ecli::elog_stdout_reply());  // 只想回 stdout
+
+// 手上有裸 sink（没建 logger / 想另指一路）时
 e_log::sink uart = e_log::make_sink(&uart_write);            // 或 e_log::stdout_sink()
 dispatch(kCommands, line.line(), scratch, sizeof(scratch),
          ecli::reply_to_sink(uart));                         // 回复原样走 elog 的 sink
-
-dispatch(kCommands, argc, argv, ecli::elog_stdout_reply());  // 只想回 stdout
 ```
 
 **为什么回复走 `sink`，不走 `logger`**：`logger::log` 是日志语义 —— 固定加
@@ -1018,11 +1029,17 @@ dispatch(kCommands, argc, argv, ecli::elog_stdout_reply());  // 只想回 stdout
 | 内容 | 走哪条 |
 |---|---|
 | 日志行 / 诊断（要级别、要来源） | `ELOG_INFO` / `ELOG_WARN` / `ELOG_ERROR` |
-| 命令回复（usage / help / 报错 / 命令自己回的话） | `reply_to_sink(sink)` —— 原样字节 |
+| 命令回复（usage / help / 报错 / 命令自己回的话） | `reply_to_logger(lg)` / `reply_to_sink(sink)` —— 原样字节 |
 
 生命周期：`reply` 只存指针，sink 必须比这次 `dispatch` 活得久；传临时 sink
 （`reply_to_sink(e_log::stdout_sink())`）会被**删除重载当场拦成编译错误**，不会留到运行时崩。
 include 这个头 = 同时需要 elog 与它依赖的 ETL。
+
+> **约定：一次绑定，多处使用。** 输出通道只在 elog 那一处定义/绑定一次（`sink` = 你的
+> `(data, size)` 写函数），日志、命令回复、以及后续任何消费者都**复用同一个已绑定对象**，
+> 不在第二处重新声明或重建同一条通道。串口 / 蓝牙 / 屏幕一视同仁：换物理出口只改
+> `create_logger` 那一个参数，日志与命令回复一起跟着走；绑的是 `multi_sink` 时，
+> 回复也自动跟着扇出到多路。取用口是 `logger::output_sink()`（完整说明见 13.9）。
 
 ---
 
@@ -1728,7 +1745,7 @@ ELOG_INFO("temp={:.1f}", t);      // 自动带上文件/行号/函数
 * **要上线、要分级、要能关日志**：用 elog，`ELOG_*` 走默认 logger，`ELOG_LOGGER_*` 指定
   logger，还能 `set_level` 在运行期切换。
 * **要给"人"看的整块文本**（usage / help / 报错）：两条都别硬塞 —— 走回复通道
-  `ecli::reply_to_sink(elog 的 sink)`（见 5.11 末尾的 `ecli/elog_reply.hpp`），
+  `ecli::reply_to_logger(*logger)`（复用日志那条通道，见 5.11 末尾的 `ecli/elog_reply.hpp`），
   原样字节，不受"单行 384 B"约束。
 
 两者可以**输出到同一条通道**：`e_log::stdout_sink()` 内部用的就是 efmt 的全局输出处理器
@@ -1820,6 +1837,7 @@ int main() {
 | 接口 | 说明 |
 |------|------|
 | `e_log::create_logger(name, sink, level)` | 建日志器，返回 `logger*`，失败为 `nullptr`；名字 ≤ 31 字符、最多 8 个、不可重名 |
+| `logger::output_sink()` | 取这个 logger 已绑定的通道（`const sink&`）—— **一次绑定，多处使用**的取用口（见 13.9） |
 | `e_log::get(name)` / `default_logger()` | 查找 / 取默认；找不到或未设为 `nullptr` |
 | `logger::set_level(level)` / `should_log(level)` | 运行期过滤（trace→critical→off） |
 | `logger::info(...)` / `warn` / `error` … | 直接打；放不下的整行静默丢弃 |
@@ -1908,6 +1926,52 @@ ELOG_INFO("data: str={} vec={}", name, raw);
   **适配器/位集**，没有迭代器接口——与 `std::queue` 等一样不支持（打印退化为 `obj@0x...`）。
 * 实现是 elog 层对 `e_fmt::formatter` 的偏特化，**不修改 efmt 核心**；efmt 独立使用
   （不包含 elog）时 ETL 类型不在支持列表里。
+
+### 13.9 输出通道的约定：一次绑定，多处使用
+
+实机上的"输出手段"很少只有一路：串口、蓝牙透传、屏（LCD / OLED）、RTT、日志文件……
+如果每加一个消费者（日志、命令回复、状态屏刷新……）就把通道再绑一次，就会出现
+"N 个地方各写一遍 `make_sink(&uart_write)`"的重复，将来换一条物理出口要改 N 处。
+
+**规矩：通道只在 elog 那一处绑定一次，其余消费者全部复用它。**
+
+```cpp
+#include <elog/elog.hpp>
+#include <ecli/elog_reply.hpp>          // 命令回复接 elog（可选层）
+
+static bool uart_write(const char* data, std::size_t size, void* /*user*/) {
+    HAL_UART_Transmit(&huart1, (uint8_t*)data, (uint16_t)size, 100);
+    return true;
+}
+
+void boot() {
+    // ★ 全局唯一一次"绑定"：通道定义 + 挂到 logger 上
+    e_log::logger* app =
+        e_log::create_logger("app", e_log::make_sink(&uart_write), e_log::level::debug);
+
+    // 之后所有消费者都从这一个绑定里取通道，谁也不重新 make_sink
+    ELOG_LOGGER_INFO(*app, "boot {} {}", "ok", 42);              // 日志：带级别 / 来源前缀
+    ecli::dispatch(kCommands, line, scratch, sizeof(scratch),
+                   ecli::reply_to_logger(*app));                 // 命令回复：原样字节
+}
+
+// logger 指针不在手边（中断 / 深层函数 / argv 入口）时，取默认 logger 的通道：
+ecli::dispatch(kCommands, argc, argv, ecli::reply_to_default_logger());
+```
+
+要点：
+
+* **取用口是 `logger::output_sink()`** —— 返回 `const sink&`（引用）。sink 由注册表静态持有，
+  比任何一次 `dispatch` 都活得久；`ecli::reply_to_logger(*lg)` 就是它的薄封装。
+* **加一路输出不用改消费者**：把 `make_sink(&uart_write)` 换成 `multi_sink`（串口 + 蓝牙 + 屏，
+  最多 4 路）就在**绑定处**一次搞定，日志与命令回复一起跟着扇出，消费者一行不用动。
+* **按源回复是另一回事**：`reply` 是每次 `dispatch` 的入参，所以"串口问的回串口、蓝牙问的回蓝牙"
+  天然成立 —— 那是按次路由，与"一次绑定"不冲突，两者可并存（同一条通道照旧复用，跨通道按需现传）。
+* **ecli 本体不认识 elog**：不带 `ecli/elog_reply.hpp` 时 ecli 用 `reply_to<uart_write>()` 直接写，
+  零依赖零开销。"一次绑定"是把已有的绑定复用起来，不是强绑 elog。
+
+**同类情况照此办理**（外设句柄、存储句柄、通信通道……）：**资源在唯一的初始化点绑定一次，
+其余地方只取用，不再各自重建。**
 
 ---
 
