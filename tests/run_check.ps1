@@ -160,6 +160,8 @@ Invoke-EfmtCompileFail -Name 'E_FMT_DERIVE with a top-level comma' -ExpectedPatt
 
 Invoke-EfmtCompileFail -Name 'enum handed to E_FMT_DERIVE' -ExpectedPattern 'E_FMT_DERIVE_ENUM' -Arguments @('-std=c++17', '-O2', "-I$include", (Join-Path $PSScriptRoot 'efmt_compile_fail_derive_enum.cpp'), '-o', (Join-Path $out 'compile_fail_derive_enum.exe'))
 
+Invoke-EfmtCompileFail -Name 'E_FMT_DERIVE on an empty type' -ExpectedPattern '声明体是空的' -Arguments @('-std=c++17', '-O2', "-I$include", (Join-Path $PSScriptRoot 'efmt_compile_fail_derive_empty.cpp'), '-o', (Join-Path $out 'compile_fail_derive_empty.exe'))
+
 $elog = Join-Path $root 'elog\elog.hpp'
 if ((Test-Path $elog) -and $hasEtl) {
     $elogExe = Join-Path $out 'elog_integration.exe'

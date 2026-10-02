@@ -1114,10 +1114,13 @@ struct derived_names_t {
   std::string_view items[N];
   long long values[N];   // 枚举取值（结构体不用，保留以共用一套打印器）
   std::size_t count = 0;
-  bool is_enum = false;
-  bool valid = false;                // 是否解析成功
-  bool parsed = false;               // 结构层面成立（大括号配平、属性位置合法）
-  bool unknown_initializer = false;  // 枚举里有认不出的初始值（非字面量）
+  // 这几个开关用位域打包：表按 N 缩放，多一个整字节的 bool 会把整张表顶到下一个 8 字节
+  // 边界（实测每个类型的名字表 +8 B rodata）。位域保持成员写法不变，一个字节装下。
+  bool is_enum : 1;
+  bool valid : 1;                // 是否解析成功
+  bool parsed : 1;               // 结构层面成立（大括号配平、属性位置合法）
+  bool unknown_initializer : 1;  // 枚举里有认不出的初始值（非字面量）
+  bool empty_body : 1;           // 声明体是空的：结构体没有字段 / 枚举没有取值
 };
 
 // ---------------------------------------------------------------------------
@@ -1684,6 +1687,13 @@ constexpr derived_names_t<MaxN> parse_derived_declaration(std::string_view text)
 
   const std::string_view head = trim(text.substr(0, open));
   const std::string_view body = text.substr(open + 1, close - open - 1);
+  // 空体单独标出来：报错时能直接说"至少要有一个字段/取值"，而不是笼统的"解析不出"
+  if (trim(body).empty()) {
+    derived_names_t<MaxN> empty{};
+    empty.parsed = true;
+    empty.empty_body = true;
+    return empty;
+  }
   return (head.size() >= 5 && head.substr(0, 5) == "enum ")
              ? parse_enum_body<MaxN>(body)
              : parse_struct_body<MaxN>(body);
@@ -2305,18 +2315,37 @@ void format_via_field_names(format_context &ctx, const format_specs &specs,
     static constexpr auto efmt_derive_tmp_ =                                          \
         ::e_fmt::detail::derive_detail::parse_derived_declaration<                    \
             EFMT_DERIVE_MAX_FIELDS>(#__VA_ARGS__);                                    \
+    static_assert(!efmt_derive_tmp_.empty_body,                                       \
+        "E_FMT_DERIVE 的声明体是空的：结构体至少要有一个字段、枚举至少要有一个取值。"   \
+        "（确实想要「无参数」的类型，就放一个占位字段，或改用类型内一行 E_FMT_FIELDS）"); \
     static_assert(!efmt_derive_tmp_.unknown_initializer,                              \
         "枚举里有非字面量的初始值（例如 A = 1 << 3）：E_FMT_DERIVE 的自动模式只认"     \
         "整数字面量。请改用 E_FMT_FIELDS(取值名, ...) 写在枚举内部显式列出");          \
-    static_assert(efmt_derive_tmp_.valid,                                             \
+    /* 只在"上面两条具体原因都不成立"时兜底报：一次报错只说一个原因 */                 \
+    static_assert(efmt_derive_tmp_.valid || efmt_derive_tmp_.empty_body ||             \
+                      efmt_derive_tmp_.unknown_initializer,                           \
         "E_FMT_DERIVE 解析不出这段声明里的字段/取值：请检查写法，或改用 "              \
         "E_FMT_FIELDS(字段, ...) 写在类型内部显式列出");                              \
     constexpr std::size_t efmt_derive_count = efmt_derive_tmp_.count;                 \
+    /* 表长至少 1（零长数组不是标准 C++）。解析失败时 count = 0：上面那条 static_assert   \
+       已经报出真正的原因，这里必须让【表长】和 format_derived 的模板实参一致，否则        \
+       GCC 会再抛一条 "derived_names_t<1> 转不成 derived_names_t<0>"，把真错误埋掉。    */  \
+    constexpr std::size_t efmt_derive_size =                                          \
+        (efmt_derive_count > 0 ? efmt_derive_count : 1);                              \
     static constexpr auto efmt_derive_names_ =                                        \
         ::e_fmt::detail::derive_detail::parse_derived_declaration<                    \
-            (efmt_derive_count > 0 ? efmt_derive_count : 1)>(#__VA_ARGS__);           \
-    ::e_fmt::detail::format_derived<efmt_derive_type, efmt_derive_count>(             \
-        value, ctx, specs, efmt_derive_names_);                                       \
+            efmt_derive_size>(#__VA_ARGS__);                                          \
+    /* 解析失败时【不实例化】打印器：static_assert 已经报出原因，再实例化只会追着抛        \
+       第二条（空结构体分解不出成员等），把真正的原因淹掉。                              */  \
+    if constexpr (efmt_derive_tmp_.valid) {                                           \
+      ::e_fmt::detail::format_derived<efmt_derive_type, efmt_derive_size>(            \
+          value, ctx, specs, efmt_derive_names_);                                     \
+    } else {                                                                          \
+      (void)value;                                                                    \
+      (void)ctx;                                                                      \
+      (void)specs;                                                                    \
+      (void)efmt_derive_names_;                                                       \
+    }                                                                                 \
   }
 
 // 结构体 / 类 / 联合体：第一个参数是声明本身，后面全是能力标签（原样给上层查）。

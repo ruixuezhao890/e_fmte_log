@@ -1268,6 +1268,8 @@ static_assert(!EFMT_ENABLE_ANSI_STYLES, "嵌入式不要往串口发转义序列
 代价下降来自**静态名字表按字段数缩放**：旧实现每个 `E_FMT_DERIVE` / `E_FMT_FIELDS` 实例
 都放一张固定 400 B 的表（16 条 × string_view + value，用不到也占）；现在表长 = 实际条目数
 （`FIELDS` 用宏参数个数，`E_FMT_DERIVE` 先按上限解析拿 count、再按 count 精确定位）。
+表里的几个开关（`is_enum` / `valid` / `parsed` / …）用**位域**打包：多一个整字节的 bool
+就会把整张表顶到下一个 8 字节边界（实测**每个类型 +8 B rodata**，位域版读数与原样一致）。
 同一份三类型样例（3 字段结构体 ×2 + 枚举 ×1）实测 Cortex-M4 `-Os`：8632 → **8220 B**（-412 B）；
 `-Size` 的 derive 行即是这份样例（含整数/浮点新路径后的完整数字）。
 
@@ -1483,6 +1485,8 @@ for (const auto& p : points) {
 | 关掉浮点后仍传浮点 | `EFMT_ENABLE_FLOAT=0: 本配置不编译浮点格式化…` |
 | 关掉容器后仍传容器 | 退化为 `obj@0x...`（聚合数组如 `std::array` / `etl::array` 在 `EFMT_DERIVE_STRICT=1` 下编译报错） |
 | 类型没有格式化器 | `Type T does not have a formatter defined…`（宿主下会退化成 `obj@0x...`） |
+| `E_FMT_DERIVE` 的声明体是空的 | `E_FMT_DERIVE 的声明体是空的：结构体至少要有一个字段、枚举至少要有一个取值…` |
+| `E_FMT_DERIVE` 解析不出声明 | `E_FMT_DERIVE 解析不出这段声明里的字段/取值…`（一次只报一个原因，不再叠二次错误） |
 
 ### 10.4 运行期不会崩
 
@@ -1600,8 +1604,14 @@ E_FMT_FORMATTER_FN(Rgb, [](format_context& ctx, const format_specs&, const Rgb& 
 ② 声明里出现了 `#if`/`#include`/宏调用，或字段数超过 `EFMT_DERIVE_MAX_FIELDS`（默认 16）→
 改用类型内一行 `E_FMT_FIELDS(字段, ...)`。错误信息里会给出这两条出路。
 
-③ **空结构体**（`struct X {}`）—— 推导至少要有一个字段。做"无参数"的命令参数类型时，
-放一个 `[[efmt::arg(skip)]] int unused = 0;` 占位即可（`skip` 不进命令行）。
+③ **空结构体**（`struct X {}`）—— 推导至少要有一个字段。这一种有专门的报错：
+`E_FMT_DERIVE 的声明体是空的：结构体至少要有一个字段、枚举至少要有一个取值。`
+做"无参数"的命令参数类型时，放一个 `[[efmt::arg(skip)]] int unused = 0;` 占位即可
+（`skip` 不进命令行）。
+
+> 报错只会说**一个**原因：解析失败时格式化器不再实例化，所以不会再追着抛
+> `derived_names_t<1> 转不成 derived_names_t<0>`、`cannot decompose class type ...` 这类
+> 二次错误（v1.11 修）。
 
 **Q26：`E_FMT_DERIVE` 打出来没有类型名？**
 默认关（`EFMT_DERIVE_SHOW_TYPE=0`），输出 `{ ax = 1.5 }`，比带类型名省 **1.35 KB Flash**
