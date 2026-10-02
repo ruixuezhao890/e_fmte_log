@@ -1,7 +1,7 @@
 # 方案：ecli 命令行解析（对标 Rust clap 的 derive 用法）
 
-> 状态：**阶段一已实现并验证**（2026-10-02）。本文记录拍板结论、交付物与边界，
-> 供后续阶段（命令表 / 多源控制台）接着往上做。
+> 状态：**阶段一、阶段二已实现并验证**（2026-10-02）。本文记录拍板结论、交付物与边界，
+> 供后续阶段（多源控制台 / 权限分级）接着往上做。
 > 备份：`pre-cli-20261002` 标签 + `docs/backup/pre_cli_20261002.bundle`。
 
 ## 1. 为什么这件事能成立
@@ -100,13 +100,26 @@ shell 补全、env 回退、自定义 value_parser、`nargs` 多值、嵌套结�
   长 token 也算进 scratch 限额 → 现在只有真去引号 / 反转义的 token 才占 scratch。
 - 体积优化：整数溢出判定不再用 64 位除法（那会把 `__udivmoddi4` 720 B 拖进固件）。
 
-## 8. 后续阶段（等拍板）
+## 8. 阶段二：命令表 + 子命令（已交付）
 
-1. **阶段二**：命令表 + 子命令（`wifi set ssid x` 这类），命令带 help 与处理函数指针，
-   仍是零堆的静态表。
-2. **阶段三**：可选 `ecli/cli_console.hpp` —— 源注册表 + 轮询顺序 + 按源回复 +
+`ecli/command.hpp`：命令表是 `constexpr` 静态数组 `{name, help, invoke}`，
+**命令名带空格就是子命令**，匹配用**最长 token 前缀**（`"wifi set x"` 命中 `"wifi set"` 而不是
+`"wifi"`）—— 没有树、没有插值、没有 `new`。每个命令一个自包含 thunk
+（由 `command_of<Args, Fn>()` 生成）：自己声明参数类型、自己 `parse`、自己把帮助/报错写回 reply。
+
+- 处理函数签名统一 `void(const Args &, reply)`；reply 两指针（ctx + 写函数），
+  提供 `reply_to<uart_write>()` / `buffer_reply` / `stdout_reply()` / `string_reply()` / 空 reply。
+- 内置帮助：`help` / `-h` / `--help` / `?` 列命令表；`help wifi set`、`wifi set -h` 给该命令用法。
+- 未知命令 → `error::unknown_command` + 命令表；命令内错误复用阶段一的 `write_error`。
+- 测试 `tests/ecli_command_check.cpp` 52 项 × 宿主/嵌入式两配置；sandbox 示例 16/16。
+- 体积（Cortex-M4 `-Size`）：命令表 + 2 条命令 **8836 B**（相对只 `parse` 多约 4.0 KB，
+  主要是每条命令一份 thunk/parse 实例）。
+
+## 9. 后续（等拍板）
+
+1. **阶段三**：可选 `ecli/cli_console.hpp` —— 源注册表 + 轮询顺序 + 按源回复 +
    每源权限等级（如蓝牙只读）。
-3. 版本号与发布：按工程习惯由你定（发布前不擅自改版本号、不推远端）。
+2. 版本号与发布：按工程习惯由你定（发布前不擅自改版本号、不推远端）。
 
 ## 9. 已知上限
 

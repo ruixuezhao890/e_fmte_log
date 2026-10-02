@@ -1,7 +1,7 @@
 # efmt / elog 沙盒
 
 CLion 里 **File → Open** 选这个 `sandbox` 目录即可（里面有 `CMakeLists.txt`，CLion 会自己 configure 并生成 `cmake-build-*`）。
-C++17；`main.cpp` 是一次功能走查：efmt 打印 → eserde 基座 → JSON → **CBOR** → elog × ETL → **ecli 命令行**，
+C++17；`main.cpp` 是一次功能走查：efmt 打印 → eserde 基座 → JSON → **CBOR** → elog × ETL → **ecli 命令行 / 命令表**，
 自带一组自检（跑完打印 `N/N checks passed`，N = `check()` 的条数；全过才返回 0）。
 `tests/run_check.ps1` 会连它一起编、一起跑（沙盒也是库的消费者），接口漂了这里会先红。
 
@@ -35,6 +35,10 @@ CMakeLists 里加了三条，前两条和 `tests/run_check.ps1` 用的完全一�
 （`--level 9 "in put.txt"`，带引号与空格）—— 解析器不认识 argv，只认识 token 表；
 顺带打印自动生成的帮助（usage + 选项表）与报错文本（含 usage）。
 
+再末尾是 `ecli 命令表` 自检段：一张 `constexpr` 表两条命令（`status` 与子命令 `wifi set`），
+依次分发 `status -v` / `wifi set -s mynet` / `wifi set`（必填缺失）/ `help wifi set` / `nope`（未知命令），
+输出全部走 `buffer_reply`（真实项目里换成 `reply_to<uart_write>()` 就回给串口）。
+
 ## 跑
 
 CLion 右上角选 `sandbox` 目标直接 Run。命令行等价：
@@ -66,6 +70,7 @@ cmake --build build
 | `ECLI_MAX_TOKENS` | 16 | 一条命令最多几个 token |
 | `ECLI_MAX_LINE` | 192 | 去引号缓冲 / `line_reader` 行宽 |
 | `ECLI_ENABLE_HELP` | 1 | 0 = 裁掉 usage/help 文本（省 Flash） |
+| `ECLI_REPLY_BUFFER` | 384 | 命令表帮助/报错的栈缓冲 |
 | `ELOG_MAX_RECORD_SIZE` | 384 | 单条日志的记录缓冲 |
 | `ELOG_MAX_LOGGERS` | 8 | logger 槽位数 |
 

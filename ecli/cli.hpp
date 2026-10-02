@@ -91,6 +91,7 @@ enum class error {
   too_many_values,   // 可重复选项把定长容器塞满了
   too_many_tokens,   // 词法缓冲装不下（token 数超 ECLI_MAX_TOKENS，或去引号后超 ECLI_MAX_LINE）
   bad_quote,         // 一行文本里引号没闭合
+  unknown_command,   // 命令表里没有这个命令（ecli/command.hpp 用）
 };
 
 constexpr const char *error_name(error e) {
@@ -106,6 +107,7 @@ constexpr const char *error_name(error e) {
     case error::too_many_values: return "too_many_values";
     case error::too_many_tokens: return "too_many_tokens";
     case error::bad_quote: return "bad_quote";
+    case error::unknown_command: return "unknown_command";
   }
   return "?";
 }
@@ -172,7 +174,9 @@ struct text_out {
   std::size_t n = 0;
 
   void put(char c) {
-    if (n + 1 < cap) buf[n] = c;
+    // 写成 "cap != 0 && n < cap - 1" 而不是 "n + 1 < cap"：语义相同（永远给 NUL 留一格），
+    // 但 GCC 的 -Wstringop-overflow 在内联链上能看懂这一版，不会误报"写进 0 大小区域"。
+    if (cap != 0 && n < cap - 1) buf[n] = c;
     ++n;
   }
 
@@ -1086,11 +1090,11 @@ error parse(int argc, const char *const *argv, T &out, error_info *info = nullpt
 // 帮助 / 用法 / 报错（snprintf 语义；buf = nullptr 时只量长度）
 // ---------------------------------------------------------------------------
 template <typename T>
-std::size_t write_usage(const char *app, char *buf, std::size_t cap) {
+std::size_t write_usage(std::string_view app, char *buf, std::size_t cap) {
 #if ECLI_ENABLE_HELP
   detail::text_out out{buf, cap, 0};
   out.put_lit("usage: ");
-  out.put(std::string_view(app));
+  out.put(app);
   detail::put_usage_tail(out, detail::options_holder<T>::value.data(),
                          detail::options_holder<T>::count);
   return out.finish();
@@ -1104,13 +1108,13 @@ std::size_t write_usage(const char *app, char *buf, std::size_t cap) {
 
 // 帮助：about 可空；选项列的对齐宽度按最长的一项算
 template <typename T>
-std::size_t write_help(const char *app, const char *about, char *buf, std::size_t cap) {
+std::size_t write_help(std::string_view app, std::string_view about, char *buf, std::size_t cap) {
 #if ECLI_ENABLE_HELP
   constexpr std::size_t n = detail::options_holder<T>::count;
   const option_view *opts = detail::options_holder<T>::value.data();
   detail::text_out out{buf, cap, 0};
-  if (about != nullptr && *about != 0) {
-    out.put(std::string_view(about));
+  if (!about.empty()) {
+    out.put(about);
     out.put_lit("\n\n");
   }
   std::size_t width = 0;
@@ -1124,7 +1128,7 @@ std::size_t write_help(const char *app, const char *about, char *buf, std::size_
     if (k_help_column > width) width = k_help_column;
   }
   out.put_lit("usage: ");
-  out.put(std::string_view(app));
+  out.put(app);
   detail::put_usage_tail(out, opts, n);
   out.put_lit("\n\noptions:\n");
   for (std::size_t i = 0; i < n; ++i) {
@@ -1152,7 +1156,7 @@ std::size_t write_help(const char *app, const char *about, char *buf, std::size_
 
 // 报错：错误码 + 出错位置 + usage（调用方把这段文本丢给对应的输入源即可）
 template <typename T>
-std::size_t write_error(const char *app, error e, const error_info &info, char *buf,
+std::size_t write_error(std::string_view app, error e, const error_info &info, char *buf,
                         std::size_t cap) {
 #if ECLI_ENABLE_HELP
   constexpr std::size_t n = detail::options_holder<T>::count;
@@ -1215,10 +1219,15 @@ std::size_t write_error(const char *app, error e, const error_info &info, char *
     case error::bad_quote:
       out.put_lit("unterminated quote");
       break;
+    case error::unknown_command:
+      out.put_lit("unknown command '");
+      out.put(info.token);
+      out.put_lit("'");
+      break;
   }
   out.put_lit("\n\n");
   out.put_lit("usage: ");
-  out.put(std::string_view(app != nullptr ? app : ""));
+  out.put(app);
   detail::put_usage_tail(out, opts, n);
   return out.finish();
 #else
@@ -1234,7 +1243,7 @@ std::size_t write_error(const char *app, error e, const error_info &info, char *
 #if EFMT_ENABLE_DYNAMIC_STRING
 // 宿主便利版：直接拿 std::string（嵌入式没有 std::string，所以按开关裁剪）
 template <typename T>
-std::string usage_string(const char *app) {
+std::string usage_string(std::string_view app) {
   const std::size_t need = write_usage<T>(app, nullptr, 0);
   std::string out(need + 1, '\0');
   write_usage<T>(app, &out[0], need + 1);
@@ -1243,7 +1252,7 @@ std::string usage_string(const char *app) {
 }
 
 template <typename T>
-std::string help_string(const char *app, const char *about = nullptr) {
+std::string help_string(std::string_view app, std::string_view about = {}) {
   const std::size_t need = write_help<T>(app, about, nullptr, 0);
   std::string out(need + 1, '\0');
   write_help<T>(app, about, &out[0], need + 1);
@@ -1252,7 +1261,7 @@ std::string help_string(const char *app, const char *about = nullptr) {
 }
 
 template <typename T>
-std::string error_string(const char *app, error e, const error_info &info) {
+std::string error_string(std::string_view app, error e, const error_info &info) {
   const std::size_t need = write_error<T>(app, e, info, nullptr, 0);
   std::string out(need + 1, '\0');
   write_error<T>(app, e, info, &out[0], need + 1);

@@ -23,6 +23,7 @@ UART / RTT / ITM / SD 卡 / 任意缓冲区。
 | CBOR | `eserde::cbor`：RFC 8949 子集（定长头 / 最短整数编码 / `0xFA`·`0xFB` 浮点含 **NaN·Inf 原样传**）；**写出的字节标准解码器直接能读**，黄金字节对拍 RFC 附录 A；与 JSON 共用一套语义，标签换 `cbor = "别名"` / `"skip"` |
 | 能力门禁 | `write_to` 要 `Serialize`、`read_from` 要 `Deserialize`，缺了**编译期报错**（含嵌套成员）；标量 / 枚举 / 容器是基础类型不需要标签 |
 | 命令行解析 | `ecli/`：对标 Rust `clap` 的 derive 用法 —— `E_FMT_DERIVE(struct args{...}, Cli)` 声明即推导解析器 + 自动 usage/help/报错；**同一个解析器吃 argv 与串口/蓝牙/键盘的"一行文本"**；bool 开关 / `0x` 整数 / 枚举名 / 定长字符串（装不下报错不截断）/ 可重复容器；零堆零异常零第三方 |
+| 命令表 | `ecli/command.hpp`：零堆静态表，**命令名带空格 = 子命令**（最长 token 前缀匹配），处理函数统一 `void(const Args&, reply)` —— reply 决定"谁问的回给谁"（argv→stdout / 串口→串口 / 蓝牙→蓝牙）；内置 `help` / `help <命令>` / `<命令> -h` |
 | 分级日志 | ELog：trace→critical + off，多 logger 独立 sink、运行期 `set_level`，直接格式化 **ETL 类型**（`etl::string`/`vector`/`optional`/`variant` …） |
 
 ## 目录结构
@@ -40,6 +41,7 @@ eserde/json.hpp       JSON 序列化 / 反序列化（构建在基座上，零�
 eserde/cbor.hpp       CBOR（RFC 8949）子集：二进制序列化 / 反序列化
 eserde/eserde.hpp     汇总头：按 ESERDE_ENABLE_* 拉格式（可选）
 ecli/cli.hpp          命令行解析（构建在基座上：词法 + 取值 + 帮助/报错 + 行装配器）
+ecli/command.hpp      命令表：多命令 / 子命令分发 + 回复通道（可选，构建在 cli.hpp 上）
 docs/EFMT-使用手册.md  完整新手手册（18 章）——新用户从这里开始
 tests/                零框架行为检查 + 浮点差分对拍 + 基准 + 编译期反例
 sandbox/              CLion 试玩工程（打开即跑，19 条自检走查）
@@ -179,6 +181,13 @@ E_FMT_DERIVE(struct args {
 
 args a{};
 if (ecli::parse(argc, argv, a) == ecli::error::help_requested) { /* 打帮助后正常退出 */ }
+
+// 多命令 / 子命令：名字带空格就是子命令，最长前缀优先
+constexpr ecli::command kCmds[] = {
+  {"status",   "show link status", ecli::command_of<status_args, status_run>()},
+  {"wifi set", "set ssid",         ecli::command_of<wifi_args, wifi_set_run>()},
+};
+ecli::dispatch(kCmds, line, scratch, sizeof(scratch), ecli::reply_to<uart_write>());
 ```
 
 **分级日志**（需要 ETL）：
@@ -215,6 +224,7 @@ Windows / Linux / **ESP-IDF 走宿主配置**（容器、std::string、ANSI、st
 | `ECLI_MAX_TOKENS` | 16 | 一条命令的 token 上限 |
 | `ECLI_MAX_LINE` | 192 | 去引号缓冲 / `line_reader` 行宽 |
 | `ECLI_ENABLE_HELP` | 1 | 0 = 裁掉 usage/help 文本省 Flash |
+| `ECLI_REPLY_BUFFER` | 384 | 命令表帮助/报错的栈缓冲 |
 | `ESERDE_JSON_MAX_KEY` / `..._MAX_DEPTH` | 64 / 8 | JSON 键名缓冲 / 嵌套深度上限 |
 | `ESERDE_CBOR_MAX_DEPTH` | 8 | CBOR 嵌套深度上限 |
 | `ESERDE_ENABLE_JSON` / `..._CBOR` | 1 / 0 | 汇总头 `eserde/eserde.hpp` 拉哪些格式（直接 include 格式头时不参与） |
@@ -310,7 +320,7 @@ SysTick 计时（1 tick ≈ 570 条 guest 指令，同一环境标定），**确
 当前基线：行为检查 149 项 × 2 标准（含 `E_FMT_STR` 快路径/转义回退/显式索引用例）、
 E_FMT_DERIVE 34 项 × 2 配置、派生宏 28 项（宿主+嵌入式）、eserde 基座 6 项 × 3 配置、
 eserde::json 28 项 × 2 配置 + ETL 7 项、eserde::cbor 93 项 × 2 配置 + ETL 7 项、
-ecli 命令行解析 114 项 × 2 配置 + ETL 12 项、
+ecli 命令行解析 114 项 × 2 配置 + ETL 12 项、ecli 命令表 52 项 × 2 配置、
 浮点对拍 24.6 万次 0 失败、九个编译期反例按预期失败 —— 全部通过。
 
 > 需要 ETL 才能跑 elog 相关步骤：没接 ETL 时脚本会跳过并提示（`-EtlInclude` 指定位置）。

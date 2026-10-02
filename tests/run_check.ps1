@@ -285,6 +285,19 @@ if (Test-Path $ecli) {
         }
     }
 
+    # 命令表：多命令 / 子命令分发（每个命令一个自包含 thunk）
+    $cmdExe = Join-Path $out 'ecli_command_check.exe'
+    $cmdArgs = @('-std=c++17') + $baseArgs + @("-I$root", (Join-Path $PSScriptRoot 'ecli_command_check.cpp'), '-o', $cmdExe)
+    if (Invoke-EfmtBuild 'ecli command table / subcommands' $cmdArgs) {
+        Invoke-EfmtRun 'ecli command table' $cmdExe
+    }
+
+    $cmdEmbExe = Join-Path $out 'ecli_command_check_embedded.exe'
+    $cmdEmbArgs = @('-std=c++17') + $baseArgs + @('-DEFMT_ENABLE_HOSTED=0', "-I$root", (Join-Path $PSScriptRoot 'ecli_command_check.cpp'), '-o', $cmdEmbExe)
+    if (Invoke-EfmtBuild 'ecli command table (embedded configuration)' $cmdEmbArgs) {
+        Invoke-EfmtRun 'ecli command table (embedded)' $cmdEmbExe
+    }
+
     # Capability gate: no Cli tag means no command line parsing (must be a compile error)
     Invoke-EfmtCompileFail -Name 'cli args without the Cli capability' -ExpectedPattern '这个类型不能做命令行参数' -Arguments @('-std=c++17', '-O2', "-I$include", "-I$root", (Join-Path $PSScriptRoot 'ecli_compile_fail_caps.cpp'), '-o', (Join-Path $out 'compile_fail_cli_caps.exe'))
 }
@@ -326,7 +339,8 @@ if ($Size) {
         # ecli：同一份源码三条读数，差值就是命令行解析的代价
         @{ Name = 'cli baseline (decl only)'; Source = 'ecli_size_probe.cpp'; Defines = @('-DEFMT_ENABLE_HOSTED=0', "-I$root", '-DECLI_SIZE_PROBE_OFF=1') },
         @{ Name = 'cli parse'; Source = 'ecli_size_probe.cpp'; Defines = @('-DEFMT_ENABLE_HOSTED=0', "-I$root") },
-        @{ Name = 'cli parse + help/error'; Source = 'ecli_size_probe.cpp'; Defines = @('-DEFMT_ENABLE_HOSTED=0', "-I$root", '-DECLI_SIZE_PROBE_HELP=1') }
+        @{ Name = 'cli parse + help/error'; Source = 'ecli_size_probe.cpp'; Defines = @('-DEFMT_ENABLE_HOSTED=0', "-I$root", '-DECLI_SIZE_PROBE_HELP=1') },
+        @{ Name = 'cli command table (2 cmds)'; Source = 'ecli_size_probe.cpp'; Defines = @('-DEFMT_ENABLE_HOSTED=0', "-I$root", '-DECLI_SIZE_PROBE_TABLE=1') }
     )
     foreach ($target in $targets) {
         $compiler = Get-Command $target.Cxx -ErrorAction SilentlyContinue

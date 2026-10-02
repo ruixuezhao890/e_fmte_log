@@ -17,6 +17,7 @@
 #include <eserde/json.hpp>        // JSON 序列化 / 反序列化（构建在基座上）
 #include <eserde/cbor.hpp>        // CBOR 二进制（RFC 8949 子集，写出的字节标准解码器能读）
 #include <ecli/cli.hpp>           // 命令行解析（声明即推导；argv 与"一行文本"同一条路）
+#include <ecli/command.hpp>       // 命令表：多命令 / 子命令（"wifi set" 按最长前缀匹配）
 
 // ETL：sandbox 显式依赖（CMakeLists.txt 的 ETL_ROOT），elog 已把 ETL 常用类型
 // 接进格式化（etl::string / etl::vector / etl::optional / etl::pair / etl::variant...）
@@ -82,6 +83,32 @@ E_FMT_DERIVE(struct cli_args {
   [[efmt::arg(long = "tag", help = "repeatable")]]                 std::vector<std::string> tags;
   [[efmt::arg(pos = "1", help = "input file")]]                    std::string input;
 }, Cli);
+
+// ⑦ 命令表：一个命令 = {名字, 帮助, 处理函数}，名字带空格就是子命令。
+//    处理函数签名统一 void(const Args&, ecli::reply)：参数照旧由 E_FMT_DERIVE 推导，
+//    reply 决定"回给谁"（串口问的回串口 —— 所以同一个命令表能吃 argv、串口、蓝牙）。
+E_FMT_DERIVE(struct status_cmd_args {
+  [[efmt::arg(short = "v", long = "verbose", help = "show details")]] bool verbose = false;
+}, Cli);
+
+E_FMT_DERIVE(struct wifi_set_args {
+  [[efmt::arg(short = "s", long = "ssid", required, help = "network name")]] etl::string<16> ssid;
+}, Cli);
+
+static void status_cmd(const status_cmd_args &a, ecli::reply out) {
+  out.put_lit(a.verbose ? "link: up (detail)\n" : "link: up\n");
+}
+
+static void wifi_set_cmd(const wifi_set_args &a, ecli::reply out) {
+  char buf[64];
+  const std::size_t n = format_to(buf, sizeof(buf), "ssid -> {}\n", a.ssid);
+  out.put(std::string_view(buf, n < sizeof(buf) ? n : sizeof(buf) - 1));
+}
+
+static constexpr ecli::command kCommands[] = {
+    {"status", "show link status", ecli::command_of<status_cmd_args, status_cmd>()},
+    {"wifi set", "set ssid", ecli::command_of<wifi_set_args, wifi_set_cmd>()},
+};
 
 // ============================================================================
 // 小工具
@@ -254,6 +281,40 @@ int main() {
     cli_args c{};
     const ecli::error e3 = ecli::parse("--level=abc", c, line_scratch, sizeof(line_scratch), &info);
     std::printf("%s\n", ecli::error_string<cli_args>("sandbox", e3, info).c_str());
+  }
+
+  // ============================================================================
+  // ecli 命令表：多命令 / 子命令 / 帮助 / 报错，全部回给"发起命令的那一路"
+  // ============================================================================
+  section("ecli 命令表（多命令 / 子命令）");
+  {
+    char reply[256];
+    char scratch[ECLI_MAX_LINE];
+    const char *lines[] = {"status -v", "wifi set -s mynet", "wifi set", "help wifi set", "nope"};
+    for (const char *line : lines) {
+      reply[0] = '\0';
+      buffer_reply b{reply, sizeof(reply), 0};
+      const ecli::error e = ecli::dispatch(kCommands, line, scratch, sizeof(scratch), b.as_reply());
+      std::printf("  $ %-18s [%s]\n", line, ecli::error_name(e));
+      if (reply[0] != '\0') {
+        std::printf("      %s", reply);            // 命令自己回的话（多行 help 原样打）
+      }
+    }
+    reply[0] = '\0';
+    buffer_reply b{reply, sizeof(reply), 0};
+    (void)ecli::dispatch(kCommands, "status -v", scratch, sizeof(scratch), b.as_reply());
+    check("子命令分发 -v", std::string(reply), "link: up (detail)\n");
+    reply[0] = '\0';
+    buffer_reply b2{reply, sizeof(reply), 0};
+    (void)ecli::dispatch(kCommands, "wifi set -s office", scratch, sizeof(scratch), b2.as_reply());
+    check("子命令参数", std::string(reply), "ssid -> office\n");
+    reply[0] = '\0';
+    buffer_reply b3{reply, sizeof(reply), 0};
+    const ecli::error missing =
+        ecli::dispatch(kCommands, "wifi set", scratch, sizeof(scratch), b3.as_reply());
+    check("必填项缺失会报错并给用法",
+          missing == ecli::error::missing_required && std::string(reply).find("usage: wifi set") != std::string::npos
+              ? "ok" : "bad", "ok");
   }
 
   std::printf("\n%d/%d checks passed\n", g_checks - g_failures, g_checks);

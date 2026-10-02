@@ -865,6 +865,67 @@ std::string s = ecli::help_string<args>("app", "my tool");      // 宿主便利�
 选项匹配是线性扫描（零额外表）；**不做** shell 补全、env 回退、自定义 value_parser、
 嵌套结构体分组选项（嵌套字段要么 `skip`，要么当容器/标量用）。
 
+### 5.11 命令表与子命令：`ecli/command.hpp`（可选，构建在 5.10 之上）
+
+多命令 / 子命令（`wifi set ssid mynet` 这类）。设计三句话说完：**命令表是一个零堆静态数组**、
+**命令名允许带空格**（`"wifi set"` 就是子命令）、**匹配规则是最长 token 前缀** ——
+所以没有树、没有插值、没有 `new`。
+
+```cpp
+#include <ecli/command.hpp>
+using namespace ecli;
+
+E_FMT_DERIVE(struct status_args {
+  [[efmt::arg(short = "v", long = "verbose", help = "show details")]] bool verbose = false;
+}, Cli);
+
+E_FMT_DERIVE(struct wifi_args {
+  [[efmt::arg(short = "s", long = "ssid", required, help = "network name")]] etl::string<16> ssid;
+}, Cli);
+
+void status_run(const status_args &a, reply out) {
+  out.put_lit(a.verbose ? "link: up (detail)\n" : "link: up\n");
+}
+void wifi_set_run(const wifi_args &a, reply) { /* 干活 */ }
+
+constexpr command kCommands[] = {
+  {"status",   "show link status", command_of<status_args, status_run>()},
+  {"wifi set", "set ssid",         command_of<wifi_args, wifi_set_run>()},
+};
+```
+
+分发（三个入口，同一个表）：
+
+```cpp
+char scratch[ECLI_MAX_LINE];
+dispatch(kCommands, line.line(), scratch, sizeof(scratch), reply_to<uart_write>());  // 一行文本
+dispatch(kCommands, argc, argv, stdout_reply());                                      // 宿主 argv
+```
+
+处理函数签名统一 `void(const Args&, reply)`：参数照旧由 `E_FMT_DERIVE` 推导；`reply` 决定
+"回给谁"—— **谁问的就回给谁**（argv 工具回 stdout、串口问的回串口、蓝牙问的回蓝牙），
+所以同一份命令表在三种输入源上是同一份代码。
+
+| 回复通道 | 用途 |
+|---|---|
+| `reply_to<uart_write>()` | 库直接调你的 `void(const char*, std::size_t)` 写函数（与 efmt 输出处理器同一形状）|
+| `buffer_reply{rbuf, sizeof(rbuf)}` + `.as_reply()` | 写进定长缓冲（snprintf 语义，永远 NUL 结尾）|
+| `stdout_reply()` | 宿主调试（`EFMT_ENABLE_STDIO`）|
+| `string_reply(s)` | 宿主：追加到 `std::string`（`EFMT_ENABLE_DYNAMIC_STRING`）|
+| `reply{}` | 丢弃输出（命令照跑，用于只跑副作用的场合）|
+
+内置帮助：`help` / `-h` / `--help` / `?` 列命令表；`help wifi set` 或 `wifi set -h` 给出该命令的
+usage + 选项表（命令自己的 `help` 字段作为说明）。这四个词是保留的，**命令表里别用**。
+
+错误：未知命令 → `error::unknown_command`（回复里带命令表）；命令内部的选项 / 必填 / 取值错误
+由 5.10 那套 `write_error` 生成（带 `usage: <命令>`）。`dispatch` 把这些错误码**返回**给调用方，
+方便分类处理（比如未知命令只提示、解析失败才打错误）。
+
+代价与上限：命令表是 `constexpr` 数组，运行时零额外表；**每个命令一份自包含 thunk +
+一份 `parse<Args>` 实例**（就是 8.2c 里"每个参数类型一份"的量级，命令多时看得见，
+想省就把多个命令合并到同一个参数类型上）。帮助文本比 `ECLI_REPLY_BUFFER`（默认 384 B）
+长时会如实追加 `...(truncated)`，不静默丢。
+
 ---
 
 ## 6. 输出与打印
@@ -1123,12 +1184,16 @@ static_assert(!EFMT_ENABLE_ANSI_STYLES, "嵌入式不要往串口发转义序列
 |------|-------|---------|
 | `-DECLI_SIZE_PROBE_OFF=1`（只留声明与 schema，不调用解析） | 396 B | — |
 | 默认（调用一次 `parse`：词法 + 取值 + 匹配 + 错误码） | 4808 B | **+4.4 KB** |
-| `-DECLI_SIZE_PROBE_HELP=1`（再带上 `write_help` / `write_error`） | 6576 B | **+6.2 KB** |
+| `-DECLI_SIZE_PROBE_HELP=1`（再带上 `write_help` / `write_error`） | 6612 B | **+6.2 KB** |
+| `-DECLI_SIZE_PROBE_TABLE=1`（命令表：2 条命令 + 一次 `dispatch`） | 8836 B | **+8.4 KB** |
 
 - **帮助 / 报错文本不调用就不进固件**：只调 `parse` 时不带这 1.8 KB；`ECLI_ENABLE_HELP=0`
   另外省掉 `-h`/`--help` 的内置处理（约 52 B）。
 - **每个参数类型各一份实例**：探针里 `run<cli_args>` 约 1.2 KB，`tokenize` / `parse_integer`
   这些是各类型共用的。多命令设备要么复用一个参数类型，要么等命令表把这段摊薄。
+- **命令表本身**（`dispatch` + 回复通道 + 命令列表）约 1.4 KB；剩下的是**每条命令一份
+  自包含 thunk（含它自己的 `parse<Args>` 实例）**，两条命令合计约 2.6 KB —— 命令多时这是主要开销，
+  想省就把多个命令合并到同一个参数类型上。
 - 参数结构体里**没有浮点字段就不会实例化浮点取值路径**（不会就此拉进浮点引擎）。
 - 整数溢出的判定刻意不用 64 位除法：带除法的那版会把 `__udivmoddi4`（720 B）拖进固件，
   改成"编译期常量比较"后同一行读数 5512 → **4808 B**。
@@ -1919,6 +1984,7 @@ g++ -std=c++17 -O2 -Itests/include -DEFMT_USE_LIBC_PRINTF=0 -DEFMT_FLOAT_CHECK_I
 | `ECLI_MAX_TOKENS` | 16 | 一条命令最多几个 token（含选项名） | 参数特别多时调大 |
 | `ECLI_MAX_LINE` | 192 | 去引号 / 反转义缓冲、`line_reader` 默认行宽 | 长命令行时调大（栈占用随之增加）|
 | `ECLI_ENABLE_HELP` | 1 | usage / help 文本是否编进去 | 上线固件设 0 省 Flash（`-h` 也不再特殊处理）|
+| `ECLI_REPLY_BUFFER` | 384 | 命令表里帮助 / 报错文本的栈缓冲 | 帮助长时调大（栈占用随之增加），超长会标 `...(truncated)` |
 | `EFMT_MAX_FORMAT_ARGS` | 16 / 8 | 每次调用栈 = 24 B × N | `=4` 省 96 B 栈 |
 | `EFMT_PRINT_BUFFER_SIZE` | 256 / 256 | `print/println` 单行上限 | `=128` 省 128 B 栈 |
 | `EFMT_STRING_BUFFER_SIZE` | 256 | `format()` 是否需要二次分配 | 宿主调优 |
