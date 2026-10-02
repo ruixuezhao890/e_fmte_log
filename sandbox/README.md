@@ -35,7 +35,7 @@ CMakeLists 里加了三条，前两条和 `tests/run_check.ps1` 用的完全一�
 （`--level 9 "in put.txt"`，带引号与空格）—— 解析器不认识 argv，只认识 token 表；
 顺带打印自动生成的帮助（usage + 选项表）与报错文本（含 usage）。
 
-再末尾是 `ecli 命令表` 自检段：一张 `constexpr` 表两条命令（`status` 与子命令 `wifi set`），
+再末尾是 `ecli 命令表` 自检段：一张 `constexpr` 表（`status` / 模式命令 `wifi set :ssid` / `level :n` / `echo`），
 依次分发 `status -v` / `wifi set -s mynet` / `wifi set`（必填缺失）/ `help wifi set` / `nope`（未知命令），
 输出全部走 `buffer_reply`（真实项目里换成 `reply_to<uart_write>()` 就回给串口）。
 
@@ -54,6 +54,7 @@ CMakeLists 里加了三条，前两条和 `tests/run_check.ps1` 用的完全一�
 |---|---|
 | `status` / `status -v` | 单命令与短选项 |
 | `wifi set -s mynet -p pw` | 子命令（名字带空格 = 最长前缀匹配）+ 长短选项混用 |
+| `level 0` / `level 5` / `level 99` | **直接在处理函数里用 matchit 的 `match` 表达式**（字面量 / 区间 `and_(_ >= 1, _ <= 9)` / 通配 `_`）三种分支；数字本身由命令名模式 `level :n` 捕获 |
 | `echo --upper hello` / `echo "hello world"` | 开关 + 位置参数 / 引号包空格 |
 | `help` / `help wifi set` | 命令表 / 某命令的 usage 与选项表（等价 `wifi set -h`）|
 | `nope` / `wifi set` / `status --wat` / `echo "abc` | 未知命令 / 缺必填 / 未知选项 / 引号没闭合 —— 报错都带 usage |

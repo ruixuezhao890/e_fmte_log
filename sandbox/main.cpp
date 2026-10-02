@@ -21,7 +21,9 @@
 #include <eserde/json.hpp>        // JSON 序列化 / 反序列化（构建在基座上）
 #include <eserde/cbor.hpp>        // CBOR 二进制（RFC 8949 子集，写出的字节标准解码器能读）
 #include <ecli/cli.hpp>           // 命令行解析（声明即推导；argv 与"一行文本"同一条路）
-#include <ecli/command.hpp>       // 命令表：多命令 / 子命令（"wifi set" 按最长前缀匹配）
+#include <ecli/command.hpp>       // 命令表：多命令 / 子命令 / 命令名模式段（:param、*rest）
+#include <matchit/matchit.h>      // 第三方（matchit/ 冻结副本）：这里【直接用】它的 match 表达式
+                                  // 注意：ecli 内部也用它做模式段匹配，但 sandbox 这行是独立使用
 
 // ETL：sandbox 显式依赖（CMakeLists.txt 的 ETL_ROOT），elog 已把 ETL 常用类型
 // 接进格式化（etl::string / etl::vector / etl::optional / etl::pair / etl::variant...）
@@ -102,8 +104,26 @@ E_FMT_DERIVE(struct wifi_set_args {
   [[efmt::arg(short = "p", long = "pass", help = "password")]] etl::string<16> pass;
 }, Cli);
 
+// level 命令：命令名模式 "level :n" 把数字捕获进 n，处理函数里再用 matchit 的 match 表达式分支。
+// 这就是"直接用 matchit"的样子 —— Rust 的 match 写法，macro-free，无堆分配。
+E_FMT_DERIVE(struct level_args {
+  [[efmt::arg(skip)]] int n = -1;   // 由 "level :n" 注入
+}, Cli);
+
 static void status_cmd(const status_cmd_args &a, ecli::reply out) {
   out.put_lit(a.verbose ? "link: up (detail)\n" : "link: up\n");
+}
+
+static void level_cmd(const level_args &a, ecli::reply out) {
+  using namespace matchit;
+  const char *msg = match(a.n)(
+      // clang-format off
+      pattern | 0                     = "level: off\n",
+      pattern | and_(_ >= 1, _ <= 9)  = "level: 1..9\n",
+      pattern | _                     = "level: out of range (0..9)\n"
+      // clang-format on
+  );
+  out.put_lit(msg);
 }
 
 static void wifi_set_cmd(const wifi_set_args &a, ecli::reply out) {
@@ -135,6 +155,7 @@ static void echo_cmd(const echo_cmd_args &a, ecli::reply out) {
 static constexpr ecli::command kCommands[] = {
     {"status", "show link status", ecli::command_of<status_cmd_args, status_cmd>()},
     {"wifi set :ssid", "set ssid", ecli::command_of<wifi_set_args, wifi_set_cmd>()},   // :ssid 捕获
+    {"level :n", "set level 0..9", ecli::command_of<level_args, level_cmd>()},   // 处理函数里直接 match
     {"echo", "echo text back", ecli::command_of<echo_cmd_args, echo_cmd>()},
 };
 
@@ -186,6 +207,7 @@ static void section(const char *title) { std::printf("\n--- %s ---\n", title); }
 //     status -v                     → 带细节（-v 短选项 = --verbose）
 //     wifi set mynet                → 子命令 + 命令名模式 "wifi set :ssid"：mynet 被捕获进 ssid
 //     wifi set mynet -p pw          → 模式捕获 + 普通选项混着用
+//     level 0 / 5 / 99              → 处理函数里【直接用 matchit 的 match 表达式】分支（见 level_cmd）
 //     echo --upper hello            → 开关 + 位置参数
 //     echo "hello world"            → 引号包住空格（算一个 token）
 //     help                          → 列出命令表
@@ -450,6 +472,18 @@ int main(int argc, char **argv) {
               ? "ok"
               : "bad",
           "ok");
+
+    // level 命令：命令名模式捕获（:n）→ 处理函数里 matchit 的 match 表达式三个分支
+    const char *levels[] = {"level 0", "level 5", "level 99"};
+    const char *wanted[] = {"level: off\n", "level: 1..9\n", "level: out of range (0..9)\n"};
+    for (std::size_t i = 0; i < 3; ++i) {
+      reply[0] = '\0';
+      buffer_reply b5{reply, sizeof(reply), 0};
+      const ecli::error e = ecli::dispatch(kCommands, levels[i], scratch, sizeof(scratch), b5.as_reply());
+      check(i == 0 ? "matchit: 字面量分支"
+                   : (i == 1 ? "matchit: 区间分支 and_(_ >= 1, _ <= 9)" : "matchit: 通配分支 _"),
+            e == ecli::error::ok && std::string(reply) == wanted[i] ? "ok" : "bad", "ok");
+    }
   }
 
   std::printf("\n%d/%d checks passed\n", g_checks - g_failures, g_checks);
