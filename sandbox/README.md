@@ -1,5 +1,9 @@
 # efmt / elog / ecli 沙盒
 
+> **新手从这里开始**：[沙盒命令台：新手 10 分钟上手](../docs/SANDBOX-命令台上手指南.md)
+> （怎么跑、敲什么、看到什么、怎么加一条自己的命令）。本文是配套的就地笔记：
+> include 拓扑、宏开关总表、实测坑。
+
 CLion 里 **File → Open** 选这个 `sandbox` 目录即可（里面有 `CMakeLists.txt`，CLion 会自己 configure）。
 C++17；`main.cpp` 是一个**手玩命令台**：一行一条命令、回车执行，亲眼看着输出。
 `tests/run_check.ps1` 会连它一起编、一起跑（跑的是 `--check` 冒烟，不进交互）。
@@ -34,8 +38,9 @@ C++17；`main.cpp` 是一个**手玩命令台**：一行一条命令、回车执
 | `quit` / `exit` / Ctrl+Z 回车 | 退出 |
 
 > stdin 的字节是**逐字节**喂进 `ecli::line_reader` 的 —— 跟串口 / 蓝牙收到字节、攒够一行再解析
-> 完全是同一条路径（所以 `--repl` 能直接吃管道脚本）；回话走 reply 通道，真机上把出口换成
-> `ecli::reply_to<uart_write>()` 或 `ecli::reply_to_sink(串口 sink)` 就回串口。
+> 完全是同一条路径（所以 `--repl` 能直接吃管道脚本）；回话走 reply 通道，真机上把
+> `create_logger` 的 sink 换成串口写函数就跟着回串口了（回复复用那条通道，见下），
+> 想另指一路才用 `ecli::reply_to<uart_write>()` / `ecli::reply_to_sink(串口 sink)`。
 
 ## 输出走哪条路（本仓库的规矩）
 
@@ -44,7 +49,7 @@ C++17；`main.cpp` 是一个**手玩命令台**：一行一条命令、回车执
 | 内容 | 怎么出 |
 |---|---|
 | 日志行（`log` 命令那五行、`--check` 的总结） | `ELOG_INFO` / `ELOG_WARN` / `ELOG_ERROR` —— 带级别与 `文件:行 函数` 前缀 |
-| 命令的答复 / 命令台界面文字 | `ecli::elog_stdout_reply()`（= `ecli::reply_to_sink(elog 的 stdout sink)`）—— **原样字节**，不加日志前缀、不按行截断 |
+| 命令的答复 / 命令台界面文字 | `ecli::reply_to_default_logger()`（= 复用 `main` 里 `create_logger` 绑的那条通道）—— **原样字节**，不加日志前缀、不按行截断 |
 | 交互提示符 `"> "` | 原样字节 —— elog 每行都要补前缀和换行，做不了提示符 |
 
 答复为什么不塞进 `ELOG_INFO`：`logger::log` 是**日志语义**（固定前缀 + 自己补换行 + 整行超过
@@ -52,32 +57,44 @@ C++17；`main.cpp` 是一个**手玩命令台**：一行一条命令、回车执
 缓冲区。elog 的 `sink` 才是它的"字节出口"，语义正好对上 —— `ecli/elog_reply.hpp` 就这一个职责。
 （sandbox 里负责"efmt 格式化 → reply"的是 `replyf()`，4 行。）
 
-## include 根怎么接的
+## include 根怎么接的（clone 下来就能编）
 
-CMakeLists 里加了三条，前两条和 `tests/run_check.ps1` 用的完全一致，第三条是 ETL 显式依赖：
+代码里全是本库的目录约定形状 `<middleware/efmt/...>`（88 处）与 `<middleware/etl/...>`（23 处），
+但仓库里**没有** `middleware/` 这一层，所以 CMake 在**构建目录**里现搭一个。最终只有两个 include 根：
 
 | 路径 | 提供 |
 |---|---|
-| `../tests/include` | `<middleware/efmt/...>`、`<middleware/etl/...>` |
-| `..` | `<elog/elog.hpp>`、`<ecli/...>`、`<matchit/matchit.h>` |
-| `ETL_ROOT`（CMake cache 变量） | `<etl/...>`（ETL 真实头文件**父目录**，即包含 `etl/` 子目录的那一层） |
+| `<build>/middleware/`（CMake 自建） | `<middleware/efmt/...>`、`<middleware/etl/...>` |
+| `..`（仓库根） | `<elog/elog.hpp>`、`<ecli/...>`、`<matchit/matchit.h>` |
 
-`tests/include/middleware/efmt` 是指向 `efmt/` 的 junction，`middleware/etl` 指向外部 etl-master 的 `include/etl`。
-**别删这两个 junction**；真要删只能用 `cmd /c rmdir <路径>`（不带 `/s`，带 `/s` 会跟着进目标目录把内容删掉）。
+自建的这一层优先用 **junction（Windows）/ symlink（其它平台）** —— 活链接，改了 `efmt/` 里的头文件
+立刻生效；链接建不出来才退回复制，那时 configure 会打印"改了头文件要重跑 configure"。
+不写进源码树、不需要管理员权限，`git clone` 之后直接 configure 就能编（以前它依赖
+`tests/include/` 下由 `run_check.ps1` 临时建的 junction，而 `tests/include/` 被 `.gitignore` 忽略，
+所以别人 clone 下来第一步就编不过）。
 
-**ETL 位置变了**：`cmake -DETL_ROOT=新路径`（CLion：Settings → CMake → CMake options），
-或重做 junction（先 `cmd /c rmdir tests\include\middleware\etl`，再 `mklink /J ...`，见 `tests/run_check.ps1`）。
-注意 ETL_ROOT 要指到 `etl/` 的**父目录**（如 `etl-master/include`）：ETL 自带 `string.h` 等与系统头同名的头，
-把 `etl/` 本身加进 include 路径会遮蔽 `<cstring>` 等系统头（MinGW 实测 include 链崩掉）。
+**ETL 是外部依赖**（本仓库不带），CMake 依次找：`-DETL_ROOT=` → 环境变量 `EFMT_ETL_INCLUDE`
+→ 相邻目录 `../etl-master/include`、`../etl/include`、`third_party/etl/include` → 都没有就在 configure
+期明确报错（给出下载地址和两条可抄的命令），不留到编译期。两种写法都收：指 `etl/` 的父目录，
+或直接指 `etl/` 本身。
+
+> ETL 自带 `string.h` 等与系统头同名的头：**别把 `etl/` 当 include 根**（会遮蔽 `<cstring>`，
+> MinGW 实测 include 链崩掉）。`-DETL_ROOT` / `EFMT_ETL_INCLUDE` 只用来**定位目录**，不会被塞进 `-I`；
+> 代码里一律写 `<middleware/etl/...>`。
+
+`tests/run_check.ps1` 走的是另一条路：它用 `tests/include/` 下的两个 junction（只在本机存在，
+`.gitignore` 忽略），所以那边的 `-EtlInclude` / `EFMT_ETL_INCLUDE` 指 **`etl/` 本身**。
+要删那种 junction 只能用 `cmd /c rmdir <路径>`（**不带** `/s`，带 `/s` 会跟着进目标目录把内容删掉）。
 
 ## 跑
 
-CLion 右上角选 `sandbox` 目标直接 Run。命令行等价：
+CLion 右上角选 `sandbox` 目标直接 Run。命令行等价（`ETL 位置` 那行只在 ETL 不在相邻目录时才需要）：
 
-```
-cmake -S sandbox -B build -G Ninja
+```bash
+cd <仓库根>
+cmake -S sandbox -B build -G Ninja -DETL_ROOT=<...>/etl-master/include
 cmake --build build
-./build/sandbox
+./build/sandbox          # Windows: .\build\sandbox.exe
 ```
 
 ## 想试的开关
