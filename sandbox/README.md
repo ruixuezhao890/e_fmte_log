@@ -39,6 +39,29 @@ CMakeLists 里加了三条，前两条和 `tests/run_check.ps1` 用的完全一�
 依次分发 `status -v` / `wifi set -s mynet` / `wifi set`（必填缺失）/ `help wifi set` / `nope`（未知命令），
 输出全部走 `buffer_reply`（真实项目里换成 `reply_to<uart_write>()` 就回给串口）。
 
+## 亲手敲命令验收（ecli 命令台）
+
+```bash
+./sandbox --repl          # 进入命令台；不带参数时只跑自动自检（run_check 用那条）
+```
+
+提示符下**一行一条命令、回车执行**，参数空格分开（`--opt=value` 与 `--opt value` 都行）：
+
+| 敲这个 | 看什么 |
+|---|---|
+| `status` / `status -v` | 单命令与短选项 |
+| `wifi set -s mynet -p pw` | 子命令（名字带空格 = 最长前缀匹配）+ 长短选项混用 |
+| `echo --upper hello` / `echo "hello world"` | 开关 + 位置参数 / 引号包空格 |
+| `help` / `help wifi set` | 命令表 / 某命令的 usage 与选项表（等价 `wifi set -h`）|
+| `nope` / `wifi set` / `status --wat` / `echo "abc` | 未知命令 / 缺必填 / 未知选项 / 引号没闭合 —— 报错都带 usage |
+| `-V` | 版本（`version_requested`，版本行由 sandbox 自己打）|
+| `quit` / `exit` / Ctrl+Z 回车 | 退出 |
+
+一次性模式（宿主工具那条路，argv 直接分发）：`./sandbox status -v`、`./sandbox wifi set -s m -p p`。
+
+> stdin 的字节是**逐字节**喂进 `ecli::line_reader` 的 —— 跟串口 / 蓝牙收到字节、攒够一行再解析
+> 完全是同一条路径；回话走 reply 通道（这里接 stdout，真机上换成 `ecli::reply_to<uart_write>()`）。
+
 ## 跑
 
 CLion 右上角选 `sandbox` 目标直接 Run。命令行等价：

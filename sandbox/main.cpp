@@ -2,7 +2,11 @@
  ******************************************************************************
  * @file           : main.cpp
  * @brief          : efmt / elog 的沙盒 —— 想测什么功能就往这里加
- * @attention      : include 根由 CMakeLists.txt 接好（和 tests/run_check.ps1 一致）：
+ * @attention      : 三种跑法（详见文件末尾 ⑧ 的注释块）：
+ *                     ./sandbox            只跑自动自检（run_check.ps1 用的就是这条）
+ *                     ./sandbox --repl     亲手敲命令的命令台（help 看命令表，quit 退出）
+ *                     ./sandbox status -v  一次性：按 argv 跑一条命令（宿主工具那条路）
+ *                   include 根由 CMakeLists.txt 接好（和 tests/run_check.ps1 一致）：
  *                     <repo>/tests/include → <middleware/efmt/...> <middleware/etl/...>
  *                     <repo>               → <elog/elog.hpp>
  ******************************************************************************
@@ -93,6 +97,7 @@ E_FMT_DERIVE(struct status_cmd_args {
 
 E_FMT_DERIVE(struct wifi_set_args {
   [[efmt::arg(short = "s", long = "ssid", required, help = "network name")]] etl::string<16> ssid;
+  [[efmt::arg(short = "p", long = "pass", help = "password")]]                etl::string<16> pass;
 }, Cli);
 
 static void status_cmd(const status_cmd_args &a, ecli::reply out) {
@@ -100,14 +105,35 @@ static void status_cmd(const status_cmd_args &a, ecli::reply out) {
 }
 
 static void wifi_set_cmd(const wifi_set_args &a, ecli::reply out) {
+  char buf[80];
+  // 口令只报"设了没"，不回显 —— 顺手演示"处理函数自己决定回什么"
+  const std::size_t n = format_to(buf, sizeof(buf), "ssid -> {} (password: {})\n", a.ssid,
+                                  a.pass.empty() ? "none" : "set");
+  out.put(std::string_view(buf, n < sizeof(buf) ? n : sizeof(buf) - 1));
+}
+
+E_FMT_DERIVE(struct echo_cmd_args {
+  [[efmt::arg(long = "upper", help = "uppercase the text")]] bool upper = false;
+  [[efmt::arg(pos = "1", help = "text to echo")]]            etl::string<32> text;
+}, Cli);
+
+static void echo_cmd(const echo_cmd_args &a, ecli::reply out) {
+  etl::string<32> t = a.text;
+  if (a.upper) {
+    for (std::size_t i = 0; i < t.size(); ++i) {
+      const char c = t[i];
+      if (c >= 'a' && c <= 'z') t[i] = static_cast<char>(c - 'a' + 'A');
+    }
+  }
   char buf[64];
-  const std::size_t n = format_to(buf, sizeof(buf), "ssid -> {}\n", a.ssid);
+  const std::size_t n = format_to(buf, sizeof(buf), "{}\n", t);
   out.put(std::string_view(buf, n < sizeof(buf) ? n : sizeof(buf) - 1));
 }
 
 static constexpr ecli::command kCommands[] = {
     {"status", "show link status", ecli::command_of<status_cmd_args, status_cmd>()},
     {"wifi set", "set ssid", ecli::command_of<wifi_set_args, wifi_set_cmd>()},
+    {"echo", "echo text back", ecli::command_of<echo_cmd_args, echo_cmd>()},
 };
 
 // ============================================================================
@@ -139,28 +165,99 @@ static void check(const char *what, const std::string &actual, const char *wante
 static void section(const char *title) { std::printf("\n--- %s ---\n", title); }
 
 // ============================================================================
-// elog 的接收端：一块内存缓冲（MCU 上换成 UART 即可）
+// ⑧ 验收用的命令台：亲手敲命令（默认不进，run_check 跑这个程序时不会卡在等输入）
 // ============================================================================
-static char g_log[1024];
-static std::size_t g_log_pos = 0;
-static std::size_t g_shown = 0;
+// 【怎么跑】—— 三条命令，任选
+//   编译（和 run_check.ps1 用同一组开关；CLion 里直接 Run `sandbox` 目标也行）：
+//     g++ -std=c++17 -O2 -Wall -Wextra -I tests/include -I . -DEFMT_DERIVE_SHOW_TYPE=0 sandbox/main.cpp -o sandbox.exe
+//   ① 交互模式（要手动敲命令就带 --repl）：
+//     ./sandbox.exe --repl
+//   ② 一次性模式（宿主工具那条路：argv 直接分发，方便写脚本）：
+//     ./sandbox.exe status -v
+//     ./sandbox.exe wifi set -s mynet -p secret
+//   ③ 不带任何参数 = 只跑上面那套自动自检（run_check.ps1 用的就是这条，不会等你输入）。
+//
+// 【提示符下输入什么】一行一条命令、回车执行；参数用空格分开，写 --opt=value 或 --opt value 都行
+//     status                        → 显示链路状态
+//     status -v                     → 带细节（-v 短选项 = --verbose）
+//     wifi set -s mynet             → 子命令：命令名带空格，按【最长前缀】匹配
+//     wifi set --ssid mynet -p pw   → 长选项 / 短选项混着用
+//     echo --upper hello            → 开关 + 位置参数
+//     echo "hello world"            → 引号包住空格（算一个 token）
+//     help                          → 列出命令表
+//     help wifi set                 → 看某个命令的用法（等价于 wifi set -h）
+//     quit   或   exit              → 退出（Windows 下 Ctrl+Z 再回车 = EOF，一样能退）
+//   故意敲错也能看到"报错 + usage"，这正是要验收的部分：
+//     nope                → unknown_command（顺便把命令表列出来）
+//     wifi set            → missing_required（-s 是必填）
+//     status --wat        → unknown_option
+//     echo "abc           → bad_quote（引号没闭合）
+//     wifi set -s a -s b  → 同一个选项给两次 = 最后一次生效（last wins）
+//     -V  或  --version   → version_requested（版本行由 sandbox 自己打出来）
+//
+// 【为什么这条路和真机是同一条】stdin 的字节是【一个字节一个字节】喂进 ecli::line_reader 的，
+//   跟串口 / 蓝牙收到字节、攒够一行再解析完全一样；回话走 reply 通道（这里接到 stdout，
+//   真机上换成 ecli::reply_to<uart_write>() 就回串口）。解析器不认识 argv —— 两条路同一份代码。
+static constexpr const char *kSandboxVersion = "0.1.0-sandbox";
+static char g_repl_reply[512];
 
-static bool log_sink_write(const char *data, std::size_t size, void *) {
-  if (g_log_pos + size >= sizeof(g_log)) {
-    return false;
+// 一次性：argv → 分发（宿主工具用法）
+static int run_oneshot(int argc, char **argv) {
+  buffer_reply out{g_repl_reply, sizeof(g_repl_reply), 0};
+  const ecli::error e = ecli::dispatch(kCommands, argc, argv, out.as_reply());
+  if (e == ecli::error::version_requested) {
+    char v[64];
+    ecli::write_version("sandbox", kSandboxVersion, v, sizeof(v));
+    std::printf("%s", v);
+  } else if (out.used != 0) {
+    std::printf("%s", g_repl_reply);
   }
-  std::memcpy(g_log + g_log_pos, data, size);
-  g_log_pos += size;
-  g_log[g_log_pos] = '\0';
-  return true;
+  // help / version 不是失败（和 clap 一样：打帮助/版本后退 0）
+  const bool ok = e == ecli::error::ok || e == ecli::error::help_requested ||
+                  e == ecli::error::version_requested;
+  return ok ? 0 : 1;
 }
 
-// 只打印"上次之后新增的"内容，避免重复刷屏
-static void show_new(const char *label) {
-  std::printf("  [%s] %.*s", label, static_cast<int>(g_log_pos - g_shown), g_log + g_shown);
-  g_shown = g_log_pos;
+// 交互：把 stdin 的字节流当串口喂（逐字节），一行凑齐就分发；输出回 stdout
+static int run_repl() {
+  ecli::line_reader<128> source;   // 每个输入源一个行缓冲 —— 这里只有一个源
+  char scratch[ECLI_MAX_LINE];
+  std::printf("sandbox 命令台：输入 help 看命令表，quit / exit 退出\n> ");
+  std::fflush(stdout);
+  // 顺手容错：PowerShell / 文件管道会在最前面塞 UTF-8 BOM（EF BB BF），手动敲不会有
+  static constexpr unsigned char kBom[3] = {0xEF, 0xBB, 0xBF};
+  int bom = 0;
+  for (int ch = std::getchar(); ch != EOF; ch = std::getchar()) {
+    if (bom < 3 && static_cast<unsigned char>(ch) == kBom[bom]) {
+      ++bom;
+      continue;
+    }
+    bom = 3;   // 一旦不是 BOM，后面就再也不检查
+    if (!source.put(static_cast<char>(ch))) continue;   // 还没凑够一行
+    const std::string_view cmd = source.line();
+    if (cmd == "quit" || cmd == "exit") break;
+    buffer_reply out{g_repl_reply, sizeof(g_repl_reply), 0};
+    const ecli::error e = ecli::dispatch(kCommands, cmd, scratch, sizeof(scratch), out.as_reply());
+    if (e == ecli::error::version_requested) {
+      char v[64];
+      ecli::write_version("sandbox", kSandboxVersion, v, sizeof(v));
+      std::printf("%s", v);
+    } else if (out.used != 0) {
+      std::printf("%s", g_repl_reply);
+    }
+    std::printf("  [%s]\n> ", ecli::error_name(e));
+    std::fflush(stdout);
+    source.clear();
+  }
+  std::printf("\n");
+  return 0;
 }
-int main() {
+
+int main(int argc, char **argv) {
+  // 模式选择：--repl 进命令台；给了别的参数就按 argv 跑一条命令；什么都不给 = 跑自动自检
+  if (argc > 1) {
+    return std::string_view(argv[1]) == "--repl" ? run_repl() : run_oneshot(argc, argv);
+  }
 
   person p ={
     .age = 18,
@@ -307,7 +404,7 @@ int main() {
     reply[0] = '\0';
     buffer_reply b2{reply, sizeof(reply), 0};
     (void)ecli::dispatch(kCommands, "wifi set -s office", scratch, sizeof(scratch), b2.as_reply());
-    check("子命令参数", std::string(reply), "ssid -> office\n");
+    check("子命令参数", std::string(reply), "ssid -> office (password: none)\n");
     reply[0] = '\0';
     buffer_reply b3{reply, sizeof(reply), 0};
     const ecli::error missing =

@@ -1525,6 +1525,7 @@ std::size_t write_error(std::string_view app, error e, const error_info &info, c
   out.put_lit("usage: ");
   out.put(app);
   detail::put_usage_tail(out, opts, n);
+  out.put('\n');   // 一条消息一行：调用方直接 printf 就行
   return out.finish();
 #else
   (void)app;
