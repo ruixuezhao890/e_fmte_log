@@ -25,10 +25,11 @@ C++17；`main.cpp` 是一个**手玩命令台**：一行一条命令、回车执
 | `json` / `cbor` | 同一个 `person` 写→读一圈，顺带看两种格式的字节数（cbor 27 B vs json 43 B） |
 | `log` / `log warn` / `log off` / `log trace` | 日志分级：换级别之后再看哪几行会被过滤（`[级别] [文件:行 函数]` 前缀也在这看） |
 | `level 0` / `level 5` / `level 99` | **处理函数里直接用 matchit 的 `match` 表达式**（字面量 / 区间 `and_(_ >= 1, _ <= 9)` / 通配 `_`）；数字由命令名模式 `level :n` 捕获 |
+| `net` / `net set mynet` | **两段式子命令**（名字带空格 = 子命令，最长前缀优先）：裸敲 `net` 走概览，`net set xxx` 被更长的那条接走，`xxx` 由模式段 `:ssid` 捕获；`net set`（少一段）会命中 `net` 并报 too many arguments |
 | `echo hi` / `echo --upper hi` | 开关 + 位置参数 |
 | `args -v -o a.bin --level 7 --tag net in.txt` | 完整选项集：bool 开关 / 短选项 / 取值 / 可重复 / 位置参数 |
 | `help` / `help args` | 命令表 / 某条命令的 usage 与选项表（等价 `args -h`） |
-| 故意敲错 | `num`（缺必填）、`num abc`（值不对）、`nope`（未知命令）—— 报错都带 usage |
+| 故意敲错 | `num`（缺必填）、`num abc`（值不对）、`net set`（子命令少一段）、`nope`（未知命令）—— 报错都带 usage |
 | `-V` | 版本（`version_requested`，版本行由 sandbox 自己打） |
 | `quit` / `exit` / Ctrl+Z 回车 | 退出 |
 
@@ -100,7 +101,7 @@ cmake --build build
 | `ECLI_MAX_TOKENS` | 16 | 一条命令最多几个 token |
 | `ECLI_MAX_LINE` | 192 | 去引号缓冲 / `line_reader` 行宽 |
 | `ECLI_ENABLE_HELP` | 1 | 0 = 裁掉 usage/help 文本（省 Flash） |
-| `ECLI_REPLY_BUFFER` | 384 | 命令表帮助/报错的栈缓冲 |
+| `ECLI_REPLY_BUFFER` | 384（`main.cpp` 里设成 768） | 命令表帮助/报错的栈缓冲 —— 命令多、帮助是中文时会顶到上限，桌面不抠这点栈 |
 | `ELOG_MAX_RECORD_SIZE` | 384 | 单条日志的记录缓冲 |
 | `ELOG_MAX_LOGGERS` | 8 | logger 槽位数 |
 

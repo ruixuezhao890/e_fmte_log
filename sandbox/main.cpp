@@ -19,6 +19,8 @@
  */
 
 #define EFMT_ENABLE_ANSI_STYLES 0   // 关掉颜色转义，终端 / CLion 输出干净
+// 命令表 11 条、帮助又是中文，默认 384 B 的列表缓冲会被截断 —— 桌面上不抠这点栈
+#define ECLI_REPLY_BUFFER 768
 
 #include <middleware/efmt/core/format.hpp>
 #include <elog/elog.hpp>            // 日志；顺带把 ETL 类型接进格式化（etl::string 当文本打）
@@ -90,6 +92,11 @@ E_FMT_DERIVE(struct log_args {
 
 E_FMT_DERIVE(struct level_args {
   [[efmt::arg(skip)]] int n = -1;   // 数字由命令名模式 "level :n" 捕获，不用写标签
+}, Cli);
+
+// 两段式子命令 "net set :ssid"：ssid 同样由模式段捕获进这个 skip 字段
+E_FMT_DERIVE(struct net_set_args {
+  [[efmt::arg(skip)]] etl::string<16> ssid;
 }, Cli);
 
 E_FMT_DERIVE(struct args_args {     // 宿主工具那种完整选项集
@@ -212,6 +219,16 @@ static void run_level(const level_args &a, ecli::reply out) {
   out.put_lit(msg);
 }
 
+// 光敲 net = 概览；敲 net set xxx 会被【更长的那条】命令接走（最长前缀优先）
+static void run_net(const no_args &, ecli::reply out) {
+  out.put_lit("net: 概览 —— 子命令就是「名字带空格」的另一种写法\n"
+              "  试 net set mynet（两段式子命令，mynet 被模式段 :ssid 捕获）\n");
+}
+
+static void run_net_set(const net_set_args &a, ecli::reply out) {
+  replyf(out, "ssid -> {}（这段数字/名字是命令名模式 :ssid 捕获的）\n", a.ssid);
+}
+
 static void run_echo(const echo_args &a, ecli::reply out) {
   etl::string<24> t = a.text;
   if (a.upper) {
@@ -240,6 +257,8 @@ static constexpr ecli::command kCommands[] = {
     {"cbor", "CBOR 写→读", command_of<no_args, run_cbor>()},
     {"log", "日志（可换级别）", command_of<log_args, run_log>()},
     {"level :n", "matchit 分支", command_of<level_args, run_level>()},
+    {"net", "网络概览（子命令的兜底）", command_of<no_args, run_net>()},
+    {"net set :ssid", "设置 SSID", command_of<net_set_args, run_net_set>()},
     {"echo", "回显文本", command_of<echo_args, run_echo>()},
     {"args", "完整选项集", command_of<args_args, run_args>()},
 };
@@ -278,10 +297,11 @@ static int run_console() {
               "  me             自定义类型的三种注册写法\n"
               "  json / cbor    同一个人，两种格式各走一圈\n"
               "  level 5        matchit 的分支（0 / 1..9 / 其它）\n"
+              "  net set mynet  两段式子命令（net 单独敲 = 概览，最长前缀优先）\n"
               "  log warn       日志：换级别，看哪几行被过滤\n"
               "  echo --upper hi    开关 + 位置参数\n"
               "  args -v -o a.bin --level 7 in.txt    完整选项集（还能 --tag a --tag b）\n\n"
-              "故意敲错也有东西看：num（缺参数）、num abc（值不对）、nope（未知命令）\n");
+              "故意敲错也有东西看：num（缺参数）、num abc（值不对）、net set（子命令少一段）、nope（未知命令）\n");
   ecli::write_command_list(kCommands, out);
 
   skip_bom();
@@ -318,6 +338,7 @@ static int run_smoke() {
   static const char *const kScript[] = {
       "num 42", "num 0x2a", "fmt 你好", "me", "json",
       "cbor",   "level 0",  "level 5",  "level 99",
+      "net", "net set mynet",
       "echo --upper hi", "args -v -o a.bin --level 7 --tag net in.txt",
       "help", "help args", "nope",          // nope = 未知命令，也要有回复而不是崩
   };
