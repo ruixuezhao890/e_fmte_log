@@ -1,7 +1,9 @@
 # efmt / elog 沙盒
 
 CLion 里 **File → Open** 选这个 `sandbox` 目录即可（里面有 `CMakeLists.txt`，CLion 会自己 configure 并生成 `cmake-build-*`）。
-C++17；`main.cpp` 是一次功能走查，自带 19 条自检（跑完打印 `19/19 checks passed`，全过才返回 0）。
+C++17；`main.cpp` 是一次功能走查：efmt 打印 → eserde 基座 → JSON → **CBOR** → elog × ETL，
+自带一组自检（跑完打印 `N/N checks passed`，N = `check()` 的条数；全过才返回 0）。
+`tests/run_check.ps1` 会连它一起编、一起跑（沙盒也是库的消费者），接口漂了这里会先红。
 
 ## include 根怎么接的
 
@@ -21,7 +23,11 @@ CMakeLists 里加了三条，前两条和 `tests/run_check.ps1` 用的完全一�
 注意 ETL_ROOT 要指到 `etl/` 的**父目录**（如 `etl-master/include`）：ETL 自带 `string.h` 等与系统头同名的头，
 把 `etl/` 本身加进 include 路径会遮蔽 `<cstring>` 等系统头（MinGW 实测 include 链崩掉）。
 
-`main.cpp` 末尾有 `elog × ETL 类型` 自检段：`etl::string` / `etl::vector`（含嵌套）/ `etl::optional`
+`main.cpp` 中段是序列化走查：`E_FMT_DERIVE(struct person { ... }, Debug, Serialize, Deserialize)`
+—— **能力标签是门禁**（写要 `Serialize`、读要 `Deserialize`，缺了是编译期报错，嵌套成员同样要写）——
+然后 JSON 写读一圈、CBOR 写读一圈（二进制，同一个 person：CBOR 49 B vs JSON 63 B）。
+
+末尾是 `elog × ETL 类型` 自检段：`etl::string` / `etl::vector`（含嵌套）/ `etl::optional`
 直接格式化，并演示 ETL 类型进 elog 日志（elog 对用户默认打开容器格式，MCU 上打 `etl::vector` 开箱即用）。
 
 ## 跑

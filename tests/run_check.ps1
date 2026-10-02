@@ -259,6 +259,16 @@ if (Test-Path $eserde) {
     Invoke-EfmtCompileFail -Name 'deserialize a type without the Deserialize capability' -ExpectedPattern '这个类型不能反序列化' -Arguments @('-std=c++17', '-O2', "-I$include", "-I$root", (Join-Path $PSScriptRoot 'eserde_compile_fail_caps_read.cpp'), '-o', (Join-Path $out 'compile_fail_caps_read.exe'))
 }
 
+# sandbox：CLion 试玩工程也是库的消费者 —— 一起编一遍、跑一遍。
+# 它曾经在"能力门禁生效"后静默烂掉（没人编它），这一步就是防这个。
+if ($hasEtl -and (Test-Path (Join-Path $root 'sandbox\main.cpp'))) {
+    $sandboxExe = Join-Path $out 'sandbox_check.exe'
+    $sandboxArgs = @('-std=c++17') + $baseArgs + @("-I$root", '-DEFMT_DERIVE_SHOW_TYPE=0', (Join-Path $root 'sandbox\main.cpp'), '-o', $sandboxExe)
+    if (Invoke-EfmtBuild 'sandbox walkthrough (CLion playground, consumer of everything)' $sandboxArgs) {
+        Invoke-EfmtRun 'sandbox walkthrough' $sandboxExe
+    }
+}
+
 if ($Bench) {
     # 宿主默认走 libc 浮点；再加一轮自带引擎，方便对比两种实现的耗时
     $variants = @(

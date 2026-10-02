@@ -15,6 +15,7 @@
 #include <elog/elog.hpp>
 #include <eserde/serde.hpp>       // 可选基座：能力标签查询 + schema（efmt 本体不认识它）
 #include <eserde/json.hpp>        // JSON 序列化 / 反序列化（构建在基座上）
+#include <eserde/cbor.hpp>        // CBOR 二进制（RFC 8949 子集，写出的字节标准解码器能读）
 
 // ETL：sandbox 显式依赖（CMakeLists.txt 的 ETL_ROOT），elog 已把 ETL 常用类型
 // 接进格式化（etl::string / etl::vector / etl::optional / etl::pair / etl::variant...）
@@ -65,7 +66,8 @@ E_FMT_DERIVE(struct person {              // ⑤ 声明即推导 + 字段标签 
   [[efmt::arg(short, long)]]              //    字段标签：efmt 只解析，eserde 之类上层来查
   std::string name;
   state state;
-}, Debug, Serialize);                     //    能力标签：原样登记，efmt 本体只认 Debug
+}, Debug, Serialize, Deserialize);        //    能力标签：原样登记，efmt 本体只认 Debug
+                                          //    写要 Serialize、读要 Deserialize（缺了编译期报错）
 
 
 // ============================================================================
@@ -133,6 +135,7 @@ int main() {
 
   // 基座：声明原文 → 编译期数据（能力标签 / schema / 字段标签）
   static_assert(eserde::has_cap_v<person, Serialize>, "person 带了 Serialize 能力标签");
+  static_assert(eserde::has_cap_v<person, Deserialize>, "person 带了 Deserialize 能力标签");
   static_assert(eserde::find_by_tag<person>("short") == 3, "name 字段带 short 标签");
   println_info("schema: {} 个字段；字段 3 的类型名 = {}，标签数 = {}",
                eserde::field_count<person>(),
@@ -158,6 +161,24 @@ int main() {
     println_info("json round-trip skipped: {}", eserde::json::error_name(je));
   }
 
+  // CBOR：同一个对象走二进制（同一套语义：snprintf 语义 / 失败不动原对象 / 错误码）
+  unsigned char cbor_buf[128];
+  std::size_t cbor_len = eserde::cbor::write_to(cbor_buf, sizeof(cbor_buf), p);
+  const bool cbor_fits = cbor_len < sizeof(cbor_buf);
+  if (!cbor_fits) {
+    cbor_len = sizeof(cbor_buf) - 1;
+  }
+  println_info("cbor ({} B；同样内容 json 是 {} B)", cbor_len, json_len);
+
+  person r{};
+  const eserde::cbor::error ce = eserde::cbor::read_from(cbor_buf, cbor_len, r);
+  if (ce == eserde::cbor::error::ok && cbor_fits) {
+    const std::string want = text("{}", p);
+    check("cbor round-trip", text("{}", r), want.c_str());
+  } else {
+    println_info("cbor round-trip skipped: {}", eserde::cbor::error_name(ce));
+  }
+
   // elog：第一个创建的 logger 自动成为默认 logger，之后的 ELOG_* 宏都走它。
   // 创建必须发生在第一次 ELOG_* 之前，否则默认 logger 为空、日志被静默丢弃。
   if (!e_log::create_logger("etl-demo", e_log::stdout_sink(), e_log::level::debug)) {
@@ -168,106 +189,7 @@ int main() {
   ELOG_INFO("vector print:{}",v);
   ELOG_INFO("person info {}",p);
 
-  // std::printf("\n");   // print_info 不带换行
-  // check("person", text("{}", p),
-  //       "{ age = 18, weight = 1, high = 1, name = xiaoming, state = idle }");
-  // check("person {:#}", text("{:#}", p),
-  //       "{\n  age = 18,\n  weight = 1,\n  high = 1,\n  name = xiaoming,\n  state = idle\n}");
-  // std::printf("  print_info({:#}) ->\n%s\n", text("{:#}", p).c_str());
-  // section("efmt：基础类型与格式规格");
-  // check("int", text("{}", 42), "42");
-  // check("宽度/填充", text("[{:>6}]", 42), "[    42]");
-  // check("十六进制", text("{:#x}", 48879), "0xbeef");
-  // check("浮点精度", text("{:.2f}", 3.14159), "3.14");
-  // // bool 打印成 1/0（嵌入式风格，省 Flash），不是 true/false
-  // check("字符串/bool", text("{} {}", std::string("abc"), true), "abc 1");
-  //
-  // section("efmt：运行时格式串（同一套 API）");
-  // const std::string_view runtime_fmt = "{} @ {}";
-  // check("runtime fmt", text(runtime_fmt, "dev", 7), "dev @ 7");
-  //
-  // section("efmt：自定义类型");
-  // check("AUTO", text("{}", imu{1.5f, 2.5f, 3.5f}), "imu(1.5, 2.5, 3.5)");
-  // check("FORMATTER_FIELDS", text("{}", point{3, 4}), "{x=3, y=4}");
-  // check("E_FMT_FIELDS", text("{}", cfg{}), "{ baud = 115200, verbose = 0 }");
-  // check("DERIVE 结构体", text("{}", frame{point{3, 4}, 9u}), "{ p = {x=3, y=4}, ts = 9 }");
-  // check("DERIVE 枚举", text("{}", state::sampling), "sampling");
-  // check("未列出的枚举值", text("{}", static_cast<state>(9)), "9");
-  //
-  // section("efmt：std::string（宿主默认开 EFMT_ENABLE_DYNAMIC_STRING）");
-  // check("string 作参数", text("{}", std::string("hi efmt")), "hi efmt");
-  // check("string_view", text("{}", std::string_view("view ok")), "view ok");
-  // check("带宽度", text("[{:>10}]", std::string("ab")), "[        ab]");
-  // {
-  //   std::string acc;
-  //   format_to(acc, "{} {}", 5, std::string("appended"));    // 返回 void；实测是先清空再写入
-  //   check("format_to(string&)", acc, "5 appended");
-  // }
-  // check("format() 返回 string", format("n={}", 7), "n=7");
-  //
-  // section("efmt：容器（宿主默认开启）");
-  // check("vector", text("{}", std::vector<int>{1, 2, 3}), "[1, 2, 3]");
-  //
-  // section("efmt：输出通道");
-  // std::printf("  println_info → ");
-  // println_info("hello {}, n={}", "efmt", 3);
-  //
-  // char captured[128];
-  // set_buffer_output(captured, sizeof(captured));
-  // print_info("buffer {}", 42);
-  // std::printf("  set_buffer_output 捕获: [%.*s]\n",
-  //             static_cast<int>(get_buffer_output_pos()), captured);
-  // reset_output_handler();
-  //
-  // section("elog：logger + 自定义 sink");
-  // auto made = e_log::create_logger("app", e_log::make_sink(&log_sink_write),
-  //                                  e_log::level::info);
-  // if (!made.has_value()) {
-  //   std::printf("  create_logger 失败: %s\n", e_log::to_string(made.error()));
-  //   ++g_failures;
-  // } else {
-  //   e_log::logger *logger = made.value();
-  //   std::printf("  logger name=%s, level=%s\n", logger->name(),
-  //               e_log::to_string(logger->current_level()));
-  //   (void)logger->try_info("boot {} {}", "ok", 42);
-  //   const auto filtered = logger->try_debug("这条应该被等级过滤掉");
-  //   show_new("sink");
-  //   check("info 落到 sink", std::strstr(g_log, "boot ok 42") ? "yes" : "no", "yes");
-  //   check("带等级前缀", std::strstr(g_log, "[info]") ? "yes" : "no", "yes");
-  //   check("debug 被过滤", std::strstr(g_log, "过滤掉") ? "yes" : "no", "no");
-  //   check("过滤仍算成功", filtered.has_value() ? "yes" : "no", "yes");
-  //   const auto too_long = logger->try_info("long {}", std::string(500, 'x'));
-  //   check("超长消息被拒", too_long.has_value() ? "ok" : e_log::to_string(too_long.error()),
-  //         "message too long");
-  // }
-  //
-  // section("elog：默认 logger + ELOG_INFO 宏（自带 __FILE__/__LINE__）");
-  // if (e_log::set_default_logger("app").has_value()) {
-  //   ELOG_INFO("from macro: {} + {}", 1, 2);
-  //   show_new("sink");
-  // }
-  //
-  // section("elog：多 sink（stdout + 内存）");
-  // e_log::multi_sink multi;   // 注意：multi 必须活得比用它创建的 logger 长
-  // (void)multi.add_sink(e_log::stdout_sink());
-  // (void)multi.add_sink(e_log::make_sink(&log_sink_write));
-  // auto made_multi = e_log::create_logger("multi", multi.output_sink(),
-  //                                        e_log::level::debug);
-  // if (made_multi.has_value()) {
-  //   std::printf("  下一行会同时到 stdout 和内存:\n");
-  //   (void)made_multi.value()->try_info("double sink");
-  //   show_new("sink");
-  //   check("内存也收到", std::strstr(g_log, "double sink") ? "yes" : "no", "yes");
-  // }
-  //
-  // section("elog：错误处理走 etl::expected");
-  // auto bad = e_log::create_logger("this-name-is-longer-than-thirty-one-chars",
-  //                                 e_log::stdout_sink());
-  // check("超长名字被拒", bad.has_value() ? "no" : e_log::to_string(bad.error()),
-  //       "logger name too long");
-  //
-  // std::printf("\n%d/%d checks passed\n", g_checks - g_failures, g_checks);
-  // return g_failures == 0 ? 0 : 1;
+
   // ============================================================================
   // elog × ETL：嵌入式类型直接打
   // ============================================================================
