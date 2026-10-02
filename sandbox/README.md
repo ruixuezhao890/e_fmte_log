@@ -42,7 +42,10 @@ CMakeLists 里加了三条，前两条和 `tests/run_check.ps1` 用的完全一�
 ## 亲手敲命令验收（ecli 命令台）
 
 ```bash
-./sandbox --repl          # 进入命令台；不带参数时只跑自动自检（run_check 用那条）
+./sandbox                 # 直接跑 = 进命令台（CLion 里按 Run 也是这条），开局会列出命令表
+./sandbox --check         # 只跑自动自检（run_check.ps1 用这条，免得测试卡在等人输入）
+./sandbox --repl          # 与直接跑等价（管道喂命令脚本时写出来更清楚）：
+                          #   cat cmds.txt | ./sandbox --repl
 ```
 
 提示符下**一行一条命令、回车执行**，参数空格分开（`--opt=value` 与 `--opt value` 都行）：

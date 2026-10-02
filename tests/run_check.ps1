@@ -56,8 +56,8 @@ function Invoke-EfmtBuild {
 }
 
 function Invoke-EfmtRun {
-    param([string]$Name, [string]$Exe)
-    & $Exe
+    param([string]$Name, [string]$Exe, [string[]]$ExeArgs = @())
+    & $Exe @ExeArgs
     if ($LASTEXITCODE -ne 0) {
         Write-Host "FAILED: $Name"
         $script:failures++
@@ -325,8 +325,10 @@ if (Test-Path $ecli) {
 if ($hasEtl -and (Test-Path (Join-Path $root 'sandbox\main.cpp'))) {
     $sandboxExe = Join-Path $out 'sandbox_check.exe'
     $sandboxArgs = @('-std=c++17') + $baseArgs + @("-I$root", '-DEFMT_DERIVE_SHOW_TYPE=0', (Join-Path $root 'sandbox\main.cpp'), '-o', $sandboxExe)
+    # 注意带 --check：sandbox 不带参数时进的是【交互命令台】（等人敲命令），
+    # 那会让测试卡在等输入；--check 明确只跑自动自检。
     if (Invoke-EfmtBuild 'sandbox walkthrough (CLion playground, consumer of everything)' $sandboxArgs) {
-        Invoke-EfmtRun 'sandbox walkthrough' $sandboxExe
+        Invoke-EfmtRun 'sandbox walkthrough' $sandboxExe -ExeArgs @('--check')
     }
 }
 

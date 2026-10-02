@@ -3,8 +3,8 @@
  * @file           : main.cpp
  * @brief          : efmt / elog 的沙盒 —— 想测什么功能就往这里加
  * @attention      : 三种跑法（详见文件末尾 ⑧ 的注释块）：
- *                     ./sandbox            只跑自动自检（run_check.ps1 用的就是这条）
- *                     ./sandbox --repl     亲手敲命令的命令台（help 看命令表，quit 退出）
+ *                     ./sandbox            亲手敲命令的命令台（默认就是这个；quit / exit 退出）
+ *                     ./sandbox --check    只跑自动自检（run_check.ps1 用的就是这条）
  *                     ./sandbox status -v  一次性：按 argv 跑一条命令（宿主工具那条路）
  *                   include 根由 CMakeLists.txt 接好（和 tests/run_check.ps1 一致）：
  *                     <repo>/tests/include → <middleware/efmt/...> <middleware/etl/...>
@@ -167,15 +167,17 @@ static void section(const char *title) { std::printf("\n--- %s ---\n", title); }
 // ============================================================================
 // ⑧ 验收用的命令台：亲手敲命令（默认不进，run_check 跑这个程序时不会卡在等输入）
 // ============================================================================
-// 【怎么跑】—— 三条命令，任选
+// 【怎么跑】
 //   编译（和 run_check.ps1 用同一组开关；CLion 里直接 Run `sandbox` 目标也行）：
 //     g++ -std=c++17 -O2 -Wall -Wextra -I tests/include -I . -DEFMT_DERIVE_SHOW_TYPE=0 sandbox/main.cpp -o sandbox.exe
-//   ① 交互模式（要手动敲命令就带 --repl）：
-//     ./sandbox.exe --repl
+//   ① 直接跑 = 进命令台（本文档的主角）：
+//     ./sandbox.exe                 ← CLion 里按 Run、或命令行直接敲，都会看到提示符 "> "
+//     只有 --check 才跑自动自检（run_check.ps1 用这条，免得测试卡在等人输入）：
+//     ./sandbox.exe --check
+//     --repl 与直接跑等价（管道喂命令脚本时写出来更清楚）：cat cmds.txt | ./sandbox.exe --repl
 //   ② 一次性模式（宿主工具那条路：argv 直接分发，方便写脚本）：
 //     ./sandbox.exe status -v
 //     ./sandbox.exe wifi set -s mynet -p secret
-//   ③ 不带任何参数 = 只跑上面那套自动自检（run_check.ps1 用的就是这条，不会等你输入）。
 //
 // 【提示符下输入什么】一行一条命令、回车执行；参数用空格分开，写 --opt=value 或 --opt value 都行
 //     status                        → 显示链路状态
@@ -222,7 +224,13 @@ static int run_oneshot(int argc, char **argv) {
 static int run_repl() {
   ecli::line_reader<128> source;   // 每个输入源一个行缓冲 —— 这里只有一个源
   char scratch[ECLI_MAX_LINE];
-  std::printf("sandbox 命令台：输入 help 看命令表，quit / exit 退出\n> ");
+  std::printf("sandbox 命令台 —— 一行一条命令、回车执行；quit / exit（或 Ctrl+Z 回车）退出\n\n");
+  {
+    buffer_reply out{g_repl_reply, sizeof(g_repl_reply), 0};   // 开局先把命令表列出来
+    ecli::write_command_list(kCommands, out.as_reply());
+    std::printf("%s\n", g_repl_reply);
+  }
+  std::printf("> ");
   std::fflush(stdout);
   // 顺手容错：PowerShell / 文件管道会在最前面塞 UTF-8 BOM（EF BB BF），手动敲不会有
   static constexpr unsigned char kBom[3] = {0xEF, 0xBB, 0xBF};
@@ -254,10 +262,24 @@ static int run_repl() {
 }
 
 int main(int argc, char **argv) {
-  // 模式选择：--repl 进命令台；给了别的参数就按 argv 跑一条命令；什么都不给 = 跑自动自检
+  // 模式选择（默认就是给你敲命令的那个）：
+  //   什么都不给            → 进命令台（交互，等你输入；EOF / quit / exit 退出）
+  //   --repl                → 同上（显式写出来，管道喂脚本时可读性更好）
+  //   --check               → 只跑下面的自动自检（run_check.ps1 用这条，不会卡住）
+  //   其它任何参数          → 当成一条命令一次性执行：./sandbox status -v
+  bool want_check = false;
   if (argc > 1) {
-    return std::string_view(argv[1]) == "--repl" ? run_repl() : run_oneshot(argc, argv);
+    const std::string_view mode(argv[1]);
+    if (mode == "--repl") return run_repl();
+    if (mode == "--check") {
+      want_check = true;   // 继续往下走 = 自动自检
+    } else {
+      return run_oneshot(argc, argv);
+    }
+  } else {
+    return run_repl();     // 直接跑（CLion / 命令行）→ 命令台
   }
+  (void)want_check;
 
   person p ={
     .age = 18,
