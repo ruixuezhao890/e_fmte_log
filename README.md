@@ -18,8 +18,10 @@ UART / RTT / ITM / SD 卡 / 任意缓冲区。
 | 自带浮点引擎 | 不依赖 libc printf、不用堆；与 printf **逐位一致**（24.6 万次随机差分对拍 0 失败），比 libc 快 40%+ |
 | 可裁剪 | 13 个开关宏；不打印浮点可关掉省 ~3.4 KB Flash；嵌入式默认配置开箱即用 |
 | 自定义类型 | 一行 `E_FMT_DERIVE(...)` 声明即推导字段/枚举名（对标 Rust `#[derive(Debug)]`），纯 C++17 实现；`E_FMT_DERIVE(声明, Debug, Serialize)` 的能力标签 + `[[efmt::arg(short, long)]]` 字段标签解析 |
-| 编译期基座 | `eserde/`（可选外挂，与 elog 平级）：能力查询 + schema（字段名/类型名/标签/枚举值）+ `visit_fields`/`field_at<I>`，全 `constexpr`；不 include 则零开销 |
+| 编译期基座 | `eserde/`（可选外挂，与 elog 平级）：能力查询 + schema（字段名/类型名/标签/枚举值）+ `visit_fields`/`field_at<I>`，全 `constexpr`；形状判定与取值搬运算术在 `eserde/traits.hpp`（各格式共用）；不 include 则零开销 |
 | JSON | `eserde::json`：`write_to`（snprintf 语义）/ `read_from`（失败不动原对象、错误码不抛异常）/ 宿主 `to_string`；零第三方、零动态分配；std 与 ETL 容器同一套代码；字段标签 `json = "别名"` 改名、`json = "skip"` 跳过 |
+| CBOR | `eserde::cbor`：RFC 8949 子集（定长头 / 最短整数编码 / `0xFA`·`0xFB` 浮点含 **NaN·Inf 原样传**）；**写出的字节标准解码器直接能读**，黄金字节对拍 RFC 附录 A；与 JSON 共用一套语义，标签换 `cbor = "别名"` / `"skip"` |
+| 能力门禁 | `write_to` 要 `Serialize`、`read_from` 要 `Deserialize`，缺了**编译期报错**（含嵌套成员）；标量 / 枚举 / 容器是基础类型不需要标签 |
 | 分级日志 | ELog：trace→critical + off，多 logger 独立 sink、运行期 `set_level`，直接格式化 **ETL 类型**（`etl::string`/`vector`/`optional`/`variant` …） |
 
 ## 目录结构
@@ -32,7 +34,10 @@ efmt/                 格式化库本体（13 个头文件，无第三方依赖�
   core/其他 *.hpp     模块按需自动包含，一般不用直接碰
 elog/elog.hpp         分级日志（构建在 EFmt 之上；需要 ETL）
 eserde/serde.hpp      编译期反射 / 能力基座（可选层）
-eserde/json.hpp       JSON 序列化 / 反序列化（构建在 serde.hpp 上，零第三方）
+eserde/traits.hpp     取值形状判定 + 取值搬运助手（json / cbor 共用）
+eserde/json.hpp       JSON 序列化 / 反序列化（构建在基座上，零第三方）
+eserde/cbor.hpp       CBOR（RFC 8949）子集：二进制序列化 / 反序列化
+eserde/eserde.hpp     汇总头：按 ESERDE_ENABLE_* 拉格式（可选）
 docs/EFMT-使用手册.md  完整新手手册（18 章）——新用户从这里开始
 tests/                零框架行为检查 + 浮点差分对拍 + 基准 + 编译期反例
 sandbox/              CLion 试玩工程（打开即跑，19 条自检走查）
@@ -46,6 +51,7 @@ sandbox/              CLion 试玩工程（打开即跑，19 条自检走查）
 |---|---|---|
 | 只格式化 | `efmt/` | 无 |
 | 还要分级日志 | `efmt/` + `elog/` | ETL（见下） |
+| 还要序列化（JSON / CBOR） | `efmt/` + `eserde/` | 无（按需只复制用到的格式头） |
 
 ### 2) 保持 `middleware/` 目录形状
 
@@ -151,6 +157,15 @@ person q{};
 if (eserde::json::read_from(buf, q) != eserde::json::error::ok) { /* error_name() 看原因 */ }
 ```
 
+**CBOR 二进制**（可选层 `eserde/cbor.hpp`；同一份数据 156 → 94 字节，NaN/Inf 原样传）：
+
+```cpp
+unsigned char bytes[128];
+const size_t need = eserde::cbor::write_to(bytes, sizeof(bytes), p);
+person q{};
+if (eserde::cbor::read_from(bytes, need, q) != eserde::cbor::error::ok) { /* ... */ }
+```
+
 **分级日志**（需要 ETL）：
 
 ```cpp
@@ -182,6 +197,9 @@ Windows / Linux / **ESP-IDF 走宿主配置**（容器、std::string、ANSI、st
 | `EFMT_DERIVE_STRICT` | 1 | 0 = 允许老宏写错作用域时退化成地址输出 |
 | `EFMT_DERIVE_ENABLE_CAPS` / `..._SCHEMA` / `..._TAGS` | 1 / 1 / 1 | 能力标签登记 / schema 原料 / 字段标签解析（不用就关，各省一点编译期与 Flash） |
 | `EFMT_DERIVE_MAX_TAGS` | 8 | 单字段标签个数上限 |
+| `ESERDE_JSON_MAX_KEY` / `..._MAX_DEPTH` | 64 / 8 | JSON 键名缓冲 / 嵌套深度上限 |
+| `ESERDE_CBOR_MAX_DEPTH` | 8 | CBOR 嵌套深度上限 |
+| `ESERDE_ENABLE_JSON` / `..._CBOR` | 1 / 0 | 汇总头 `eserde/eserde.hpp` 拉哪些格式（直接 include 格式头时不参与） |
 | `ELOG_MAX_LOGGERS` / `ELOG_MAX_RECORD_SIZE` | 8 / 384 | logger 槽位数 / 单行日志栈缓冲 |
 
 ## 文档
@@ -273,13 +291,14 @@ SysTick 计时（1 tick ≈ 570 条 guest 指令，同一环境标定），**确
 
 当前基线：行为检查 149 项 × 2 标准（含 `E_FMT_STR` 快路径/转义回退/显式索引用例）、
 E_FMT_DERIVE 34 项 × 2 配置、派生宏 28 项（宿主+嵌入式）、eserde 基座 6 项 × 3 配置、
-eserde::json 28 项 × 2 配置 + ETL 7 项、浮点对拍 24.6 万次 0 失败、
-五个编译期反例按预期失败 —— 全部通过。
+eserde::json 28 项 × 2 配置 + ETL 7 项、eserde::cbor 93 项 × 2 配置 + ETL 7 项、
+浮点对拍 24.6 万次 0 失败、九个编译期反例按预期失败 —— 全部通过。
 
 > 需要 ETL 才能跑 elog 相关步骤：没接 ETL 时脚本会跳过并提示（`-EtlInclude` 指定位置）。
 
 ## 版本历史
 
+- **v1.10** 多格式 + 能力门禁：新增 `eserde::cbor`（RFC 8949 子集，二进制，NaN/Inf 原样传），形状判定与字段键名策略提到 `traits.hpp` / `serde.hpp` 供各格式共用；`write_to` / `read_from` 现在要求 `Serialize` / `Deserialize`（缺了编译期报错，含嵌套成员）；include 即启用 + 可选汇总头 `eserde/eserde.hpp`
 - **v1.9** `E_FMT_DERIVE(声明, Debug, Serialize)` 接口（第一个参数=声明，其余=能力标签）、`E_FMT_DERIVE_ENUM` 枚举入口、`[[efmt::arg(short, long)]]` 字段标签解析，新增 `eserde/` 编译期基座（能力查询 + schema + 字段访问）
 - **v1.8** elog 支持 ETL 类型：`etl::string/optional/pair/variant` + 容器直接格式化，elog 默认开容器格式化；便捷 API 改 `const Args&...` 转发
 - **v1.7** 修复老宏写错作用域静默退化成地址输出（`EFMT_DERIVE_STRICT` 编译期拦截）

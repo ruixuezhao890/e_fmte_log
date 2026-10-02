@@ -140,7 +140,7 @@ if (Invoke-EfmtBuild 'derived formatters (embedded configuration)' $deriveEmbArg
 
 # 手册里的示例代码：跑一遍，文档与实现脱节时这里先红
 $manualExe = Join-Path $out 'efmt_manual_examples.exe'
-$manualArgs = @('-std=c++17') + $baseArgs +
+$manualArgs = @('-std=c++17') + $baseArgs + @("-I$root") +
     @((Join-Path $PSScriptRoot 'efmt_manual_examples.cpp'), '-o', $manualExe)
 if (Invoke-EfmtBuild 'manual examples (docs stay honest)' $manualArgs) {
     Invoke-EfmtRun 'manual examples' $manualExe
@@ -230,6 +230,33 @@ if (Test-Path $eserde) {
             Invoke-EfmtRun 'eserde::json (ETL)' $jsonEtlExe
         }
     }
+
+    # CBOR 子集（二进制）：黄金字节取自 RFC 8949 附录 A —— 写出的要逐字节相等，
+    # 标准编码器写出的要能读回来（宿主 + 嵌入式）
+    $cborExe = Join-Path $out 'eserde_cbor_check.exe'
+    $cborArgs = @('-std=c++17') + $baseArgs + @("-I$root", (Join-Path $PSScriptRoot 'eserde_cbor_check.cpp'), '-o', $cborExe)
+    if (Invoke-EfmtBuild 'eserde::cbor (RFC 8949 golden bytes / roundtrip)' $cborArgs) {
+        Invoke-EfmtRun 'eserde::cbor' $cborExe
+    }
+
+    $cborEmbExe = Join-Path $out 'eserde_cbor_check_embedded.exe'
+    $cborEmbArgs = @('-std=c++17') + $baseArgs + @('-DEFMT_ENABLE_HOSTED=0', "-I$root", (Join-Path $PSScriptRoot 'eserde_cbor_check.cpp'), '-o', $cborEmbExe)
+    if (Invoke-EfmtBuild 'eserde::cbor (embedded configuration)' $cborEmbArgs) {
+        Invoke-EfmtRun 'eserde::cbor (embedded)' $cborEmbExe
+    }
+
+    if ($hasEtl) {
+        $cborEtlExe = Join-Path $out 'eserde_cbor_etl_check.exe'
+        $cborEtlArgs = @('-std=c++17') + $baseArgs + @("-I$root", (Join-Path $PSScriptRoot 'eserde_cbor_etl_check.cpp'), '-o', $cborEtlExe)
+        if (Invoke-EfmtBuild 'eserde::cbor with ETL types' $cborEtlArgs) {
+            Invoke-EfmtRun 'eserde::cbor (ETL)' $cborEtlExe
+        }
+    }
+
+    # 能力门禁：没写 Serialize / Deserialize 就想（反）序列化 —— 必须是编译错误
+    Invoke-EfmtCompileFail -Name 'serialize a type without the Serialize capability' -ExpectedPattern '这个类型不能序列化' -Arguments @('-std=c++17', '-O2', "-I$include", "-I$root", (Join-Path $PSScriptRoot 'eserde_compile_fail_caps.cpp'), '-o', (Join-Path $out 'compile_fail_caps.exe'))
+
+    Invoke-EfmtCompileFail -Name 'deserialize a type without the Deserialize capability' -ExpectedPattern '这个类型不能反序列化' -Arguments @('-std=c++17', '-O2', "-I$include", "-I$root", (Join-Path $PSScriptRoot 'eserde_compile_fail_caps_read.cpp'), '-o', (Join-Path $out 'compile_fail_caps_read.exe'))
 }
 
 if ($Bench) {

@@ -2,7 +2,10 @@
  ******************************************************************************
  * @file           : json.hpp
  * @brief          : eserde 基座上的 JSON 序列化 / 反序列化（纯 C++17，无第三方库）
- * @attention      : 依赖方向：json.hpp → serde.hpp → efmt。efmt 与 elog 都不认识它。
+ * @attention      : 依赖方向：json.hpp → traits.hpp → serde.hpp → efmt。efmt 与 elog 都不认识它。
+ *                   取值形状判定与搬运算术在 traits.hpp（与 cbor.hpp 共用）；本文件只管
+ *                   JSON 的字节长什么样。结构体要能（反）序列化，必须在 E_FMT_DERIVE 里
+ *                   写明 Serialize / Deserialize —— 缺了就是编译期报错，不是静默输出。
  *                   按嵌入式的规矩来：
  *                     * 写：write_to(buf, size, obj) 是 snprintf 语义（返回所需长度，
  *                       空间不够就截断并如实返回）；宿主的 to_string 可选
@@ -18,7 +21,7 @@
 #ifndef ESERDE_JSON_HPP
 #define ESERDE_JSON_HPP
 
-#include <eserde/serde.hpp>
+#include <eserde/traits.hpp>
 
 #include <cstddef>
 #include <limits>
@@ -73,69 +76,24 @@ namespace detail {
 constexpr char kBackslash = 92;
 
 // ---------------------------------------------------------------------------
-// 类型判定：只认成员函数，std 与 ETL 通用
+// 形状判定 / 取值搬运助手：与 cbor.hpp 共用，定义在 traits.hpp
 // ---------------------------------------------------------------------------
-// 字符串：有 data()/size()，元素是 char
-template <typename T, typename = void> struct string_of {
-  static constexpr bool value = false;
-};
+using ::eserde::detail::has_max_size;
+using ::eserde::detail::has_range;
+using ::eserde::detail::has_size;
+using ::eserde::detail::integer_fits;
+using ::eserde::detail::integer_value;
+using ::eserde::detail::is_char_pointer;
+using ::eserde::detail::is_growable_range;
+using ::eserde::detail::is_object_v;
+using ::eserde::detail::is_registered_enum_v;
+using ::eserde::detail::is_string_like_v;
+using ::eserde::detail::is_writable_string;
+using ::eserde::detail::push_checked;
+using ::eserde::detail::string_of;
 
-template <typename T>
-struct string_of<T, std::void_t<decltype(std::declval<const T &>().data()),
-                                decltype(std::declval<const T &>().size())>> {
-  using char_type =
-      std::remove_cv_t<std::remove_pointer_t<decltype(std::declval<const T &>().data())>>;
-  static constexpr bool value = std::is_same<char_type, char>::value;
-};
-
-template <typename T> inline constexpr bool is_string_like_v = string_of<T>::value;
-
-// 可写字符串：再加 clear() / push_back(char) / assign(const char*, size_t)
-// （assign 用来把 etl::vector<char> 这类"长得像字符串的容器"排除在外）
-template <typename T, typename = void> struct is_writable_string : std::false_type {};
-
-template <typename T>
-struct is_writable_string<
-    T, std::void_t<decltype(std::declval<T &>().clear()),
-                   decltype(std::declval<T &>().push_back(char{})),
-                   decltype(std::declval<T &>().assign(static_cast<const char *>(nullptr),
-                                                       std::size_t{}))>>
-    : std::bool_constant<string_of<T>::value> {};
-
-// 容器：有 begin()/end()
-template <typename T, typename = void> struct has_range : std::false_type {};
-
-template <typename T>
-struct has_range<T, std::void_t<decltype(std::declval<T &>().begin()),
-                                decltype(std::declval<T &>().end())>> : std::true_type {};
-
-// 可增长容器：再加 clear() / push_back(元素)
-template <typename T, typename = void> struct is_growable_range : std::false_type {};
-
-template <typename T>
-struct is_growable_range<
-    T, std::void_t<decltype(std::declval<T &>().clear()),
-                   decltype(std::declval<T &>().push_back(*std::declval<T &>().begin()))>>
-    : std::true_type {};
-
-template <typename T, typename = void> struct has_max_size : std::false_type {};
-
-template <typename T>
-struct has_max_size<T, std::void_t<decltype(std::declval<T &>().max_size())>> : std::true_type {};
-
-// char 指针（const char* / char*）：按 JSON 字符串处理
-template <typename T> struct is_char_pointer : std::false_type {};
-
-template <typename T>
-struct is_char_pointer<T *>
-    : std::bool_constant<std::is_same<std::remove_cv_t<T>, char>::value> {};
-
-template <typename T>
-inline constexpr bool is_object_v = ::eserde::is_registered_v<T> && !std::is_enum<T>::value;
-
-template <typename T>
-inline constexpr bool is_registered_enum_v =
-    ::eserde::is_registered_v<T> && std::is_enum<T>::value;
+// 本格式的名字：字段标签用它取键名（[[efmt::arg(json = "别名")]]）
+constexpr std::string_view kFormat = "json";
 
 // ---------------------------------------------------------------------------
 // 写出：snprintf 语义（n = 所需总长度；超出 cap 就只计数不写）
@@ -410,24 +368,6 @@ inline error parse_number(reader &r, unsigned long long &mag, bool &neg, double 
   return error::ok;
 }
 
-// 目标类型装得下吗（neg = 有没有负号，mag = 无符号幅度）
-template <typename D> constexpr bool integer_fits(unsigned long long mag, bool neg) {
-  if constexpr (std::is_same_v<D, bool>) {
-    return !neg && mag <= 1ULL;
-  } else if constexpr (std::is_signed_v<D>) {
-    const unsigned long long lim =
-        neg ? static_cast<unsigned long long>(std::numeric_limits<D>::max()) + 1ULL
-            : static_cast<unsigned long long>(std::numeric_limits<D>::max());
-    return mag <= lim;
-  } else {
-    return !neg && mag <= static_cast<unsigned long long>(std::numeric_limits<D>::max());
-  }
-}
-
-template <typename D> constexpr D integer_value(unsigned long long mag, bool neg) {
-  return neg ? static_cast<D>(0ULL - mag) : static_cast<D>(mag);
-}
-
 inline bool skip_to_delimiter(reader &r) {
   const std::size_t begin = r.i;
   while (r.i < r.s.size()) {
@@ -445,27 +385,15 @@ template <typename T> error read_value(reader &r, T &out);
 // ---------------------------------------------------------------------------
 // 序列化
 // ---------------------------------------------------------------------------
-// 字段的 JSON 键名：默认字段名；标了 [[efmt::arg(json = "别名")]] 用别名
+// 字段的 JSON 键名 / 跳过策略：格式名就是标签名（通用实现见 serde.hpp 的 field_key）
+//   [[efmt::arg(json = "别名")]] → JSON 里用别名
+//   [[efmt::arg(json = "skip")]] → 这个字段不进 JSON，也不从 JSON 读
 template <typename T> constexpr std::string_view json_key(std::size_t index) {
-  const std::size_t n = ::eserde::tag_count<T>(index);
-  for (std::size_t k = 0; k < n; ++k) {
-    const auto t = ::eserde::tag<T>(index, k);
-    if (t.name == std::string_view("json") && t.has_value) return t.value;
-  }
-  return ::eserde::field_name<T>(index);
+  return ::eserde::field_key<T>(index, kFormat);
 }
 
-// [[efmt::arg(json = "skip")]]：这个字段不进 JSON，也不从 JSON 读
 template <typename T> constexpr bool field_skipped(std::size_t index) {
-  const std::size_t n = ::eserde::tag_count<T>(index);
-  for (std::size_t k = 0; k < n; ++k) {
-    const auto t = ::eserde::tag<T>(index, k);
-    if (t.name == std::string_view("json") && t.has_value &&
-        t.value == std::string_view("skip")) {
-      return true;
-    }
-  }
-  return false;
+  return ::eserde::field_skipped<T>(index, kFormat);
 }
 
 template <typename T, std::size_t... I>
@@ -520,6 +448,9 @@ template <typename T> void write_value(writer &w, const T &v) {
   } else if constexpr (is_registered_enum_v<D>) {
     write_enum_value(w, v);
   } else if constexpr (is_object_v<D>) {
+    static_assert(::eserde::has_cap_v<D, ::eserde::Serialize>,
+                  "这个类型不能序列化：请在声明处写 E_FMT_DERIVE(struct X { ... }, Debug, "
+                  "Serialize)。不想进 JSON 的字段可以标 [[efmt::arg(json = \"skip\")]]");
     w.put('{');
     constexpr std::size_t kCount = ::eserde::field_count<D>();
     write_object(w, v, std::make_index_sequence<kCount>{});
@@ -639,14 +570,6 @@ template <std::size_t N> error read_into_char_array(reader &r, char (&out)[N]) {
   }
   out[k] = 0;
   return error::ok;
-}
-
-template <typename C, typename V> bool push_checked(C &c, V &&v) {
-  if constexpr (has_max_size<C>::value) {
-    if (c.size() >= c.max_size()) return false;
-  }
-  c.push_back(std::forward<V>(v));
-  return true;
 }
 
 // 可增长容器：[...]
@@ -940,6 +863,9 @@ template <typename T> error read_value(reader &r, T &out) {
   } else if constexpr (is_registered_enum_v<D>) {
     return read_enum_value(r, out);
   } else if constexpr (is_object_v<D>) {
+    static_assert(::eserde::has_cap_v<D, ::eserde::Deserialize>,
+                  "这个类型不能反序列化：请在声明处写 E_FMT_DERIVE(struct X { ... }, Debug, "
+                  "Deserialize)。不想读的字段可以标 [[efmt::arg(json = \"skip\")]]");
     return read_object(r, out);
   } else if constexpr (is_growable_range<D>::value) {
     return read_growable_range(r, out);

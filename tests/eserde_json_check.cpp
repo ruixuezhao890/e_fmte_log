@@ -33,7 +33,7 @@ E_FMT_DERIVE_ENUM(enum class mode {
 E_FMT_DERIVE(struct point {
   int x;
   int y;
-});
+}, Debug, Serialize, Deserialize);
 
 E_FMT_DERIVE(struct person {
   int age;
@@ -50,11 +50,12 @@ E_FMT_DERIVE(struct person {
   unsigned long long big;
   [[efmt::arg(json = "skip")]]               // 不进 JSON，也不从 JSON 读
   int internal;
-}, Debug, Serialize);
+}, Debug, Serialize, Deserialize);
 
+// 只读不写：能力标签按方向各自声明（Deserialize 有、Serialize 没有）
 E_FMT_DERIVE(struct tiny_range {
   signed char small;
-});
+}, Debug, Deserialize);
 
 // ============================================================================
 static int g_checks = 0;

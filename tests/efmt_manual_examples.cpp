@@ -22,6 +22,18 @@
 
 using namespace e_fmt;
 
+// ---- 5.6 ~ 5.9 eserde：基座 / JSON / CBOR / 汇总头 ---------------------------
+// 手册 5.9：汇总头按这两个开关拉格式（默认只有 JSON，CBOR 要显式打开）
+#define ESERDE_ENABLE_CBOR 1
+#include <eserde/eserde.hpp>
+
+using namespace eserde;
+
+E_FMT_DERIVE(struct Person {
+  int age;
+  [[efmt::arg(short, long)]] std::string name;
+}, Debug, Serialize, Deserialize);
+
 // ---- 2.2 第一次打印（用缓冲区代替 UART）-------------------------------------
 static char g_uart[512];
 static size_t g_uart_pos = 0;
@@ -195,6 +207,42 @@ int main() {
   char raw[8] = {'a', '\0', 'b'};
   const std::string_view sv(raw, 3);
   failures += (format("[{}]", sv).size() != 5) ? 1 : 0;
+
+  // 5.6 基座：能力标签 / schema / 字段标签
+  EXPECT_TRUE((eserde::has_cap_v<Person, Serialize>));
+  EXPECT_TRUE((eserde::has_cap_v<Person, Deserialize>));
+  EXPECT_TRUE(eserde::field_count<Person>() == 2);
+  EXPECT_EQ(std::string(eserde::field_name<Person>(1)), "name");
+  EXPECT_EQ(std::string(eserde::field_type_name<Person>(1)), "std::string");
+  EXPECT_TRUE(eserde::find_by_tag<Person>("short") == 1);
+
+  // 5.7 JSON 一行进出（别名 / skip 标签见 tests/eserde_json_check.cpp）
+  {
+    const Person p{30, "bob"};
+    char text[64];
+    const std::size_t need = eserde::json::write_to(text, sizeof(text), p);
+    failures += (std::string(text, need) != "{\"age\":30,\"name\":\"bob\"}") ? 1 : 0;
+    Person q{};
+    failures += (eserde::json::read_from(std::string_view(text, need), q) !=
+                 eserde::json::error::ok) ? 1 : 0;
+    failures += (q.age != 30 || q.name != "bob") ? 1 : 0;
+    EXPECT_EQ(std::string(eserde::json::error_name(eserde::json::error::ok)), "ok");
+  }
+
+  // 5.8 CBOR：同一个结构体走二进制（定长 map 头 + 文本串键 + 最短整数编码）
+  {
+    const Person p{30, "bob"};
+    unsigned char bytes[64];
+    const std::size_t need = eserde::cbor::write_to(bytes, sizeof(bytes), p);
+    failures += (need != 16) ? 1 : 0;                       // a2 + "age" + 181e + "name" + "bob"
+    failures += (bytes[0] != 0xA2u || bytes[1] != 0x63u) ? 1 : 0;
+    // 24 以上要带 1 字节参数：30 → 18 1e（RFC 8949 的最短编码）
+    failures += (bytes[5] != 0x18u || bytes[6] != 0x1Eu) ? 1 : 0;
+    Person q{};
+    failures += (eserde::cbor::read_from(bytes, need, q) != eserde::cbor::error::ok) ? 1 : 0;
+    failures += (q.age != 30 || q.name != "bob") ? 1 : 0;
+    EXPECT_EQ(std::string(eserde::cbor::error_name(eserde::cbor::error::truncated)), "truncated");
+  }
 
   g_failures += failures;  // 早期写的计数也一并计入
   std::printf("manual examples: %s\n", g_failures == 0 ? "ok" : "FAILED");

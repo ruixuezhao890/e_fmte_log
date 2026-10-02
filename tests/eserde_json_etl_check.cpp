@@ -26,7 +26,7 @@ E_FMT_DERIVE(struct node {
   etl::string<8> id;
   int4 nums;
   etl::string<16> label;
-}, Debug, Serialize);
+}, Debug, Serialize, Deserialize);
 
 static int g_checks = 0;
 static int g_failures = 0;

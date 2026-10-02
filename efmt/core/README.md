@@ -92,6 +92,20 @@ docs/                 使用手册
 
 ---
 
+## v1.10 `eserde::cbor` + 能力门禁 + 分层
+
+`eserde/` 长出第二个格式：**`eserde/cbor.hpp`**（RFC 8949 子集，二进制）。为此把两个格式
+必然要抄的东西提到共用位置 —— 取值形状判定与取值搬运算术进 `eserde/traits.hpp`，
+字段键名策略泛化成 `eserde::field_key<T>(i, "格式名")` / `field_skipped<T>(i, ...)`
+（**标签名就是格式名**：`[[efmt::arg(json = "别名")]]` / `[[efmt::arg(cbor = "别名")]]`）。
+
+`write_to` / `read_from` 现在**检查能力标签**：结构体要写 `Serialize` / `Deserialize`，
+缺了是编译期报错（检查覆盖嵌套成员）。标量 / 枚举 / 容器是基础类型、不需要标签 ——
+所以 efmt 本体与 `E_FMT_DERIVE_ENUM` **一行没动**。开关：include 即启用，
+可选汇总头 `eserde/eserde.hpp`（`ESERDE_ENABLE_JSON` 默认 1、`ESERDE_ENABLE_CBOR` 默认 0）。
+
+---
+
 ## v1.9 `E_FMT_DERIVE` 带能力标签 + 字段标签 + `eserde` 基座
 
 接口变成 **`E_FMT_DERIVE(声明, 能力...)`**：第一个参数是声明本身，其后都是能力标签
@@ -118,10 +132,10 @@ E_FMT_DERIVE_ENUM(enum class state { idle, busy = 5, fault });
 `EFMT_DERIVE_MAX_TAGS`（8）。
 
 上层 `eserde/`（可选，与 `elog/` 平级）把声明原文变成编译期数据：`has_cap_v<T, Serialize>`、
-`eserde::json` 在此之上提供 JSON 序列化 / 反序列化（`write_to` / `read_from` / 宿主 `to_string`）、
 `field_count<T>()`、`field_name<T>(i)`、`field_type_name<T>(i)`、`tag<T>(i,k)`、
 `find_field`/`find_by_tag`、`visit_fields(obj, vis)`、`field_at<I>(obj)` —— 全 `constexpr`，
-不 include 时 efmt 体积与行为一字不变。
+不 include 时 efmt 体积与行为一字不变。格式实现在它上面：`eserde::json`（见 v1.10 起的
+`eserde/json.hpp` 与 `eserde/cbor.hpp`）。
 
 ---
 

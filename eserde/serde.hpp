@@ -167,6 +167,33 @@ template <typename T> constexpr std::size_t find_by_tag(std::string_view name) {
 }
 
 // ---------------------------------------------------------------------------
+// 字段的"格式键名"：格式名就是标签名（json / cbor / ...）
+// ---------------------------------------------------------------------------
+// 默认用字段名；标了 [[efmt::arg(json = "别名")]] 就用别名。
+// 各格式只传自己的名字进来，键名策略因此不用每个格式写一遍。
+// 关掉 EFMT_DERIVE_ENABLE_TAGS 时标签读不到 → 一律退回字段名（不报错）。
+template <typename T>
+constexpr std::string_view field_key(std::size_t index, std::string_view format) {
+  const std::size_t n = tag_count<T>(index);
+  for (std::size_t k = 0; k < n; ++k) {
+    const auto t = tag<T>(index, k);
+    if (t.name == format && t.has_value) return t.value;
+  }
+  return field_name<T>(index);
+}
+
+// [[efmt::arg(json = "skip")]]：这个字段不进该格式，也不从该格式读
+template <typename T>
+constexpr bool field_skipped(std::size_t index, std::string_view format) {
+  const std::size_t n = tag_count<T>(index);
+  for (std::size_t k = 0; k < n; ++k) {
+    const auto t = tag<T>(index, k);
+    if (t.name == format && t.has_value && t.value == std::string_view("skip")) return true;
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
 // 按索引访问成员（写序列化/反序列化时用）
 // ---------------------------------------------------------------------------
 // 字段数来自 schema（不是探测出来的），所以含数组成员的结构体也不会错位。

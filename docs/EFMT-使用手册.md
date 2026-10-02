@@ -568,8 +568,17 @@ format("{}", std::make_pair("k", 7));           // "(k: 7)"
 
 `eserde` 是 efmt 的**可选外挂层**（与 `elog/` 平级，`#include <eserde/serde.hpp>`，
 只 include 仓库根目录）。它把 `E_FMT_DERIVE` 生成的**声明原文**变成编译期可查的数据，
-自己不产生任何行为代码 —— 序列化（JSON / 二进制协议 / CLI）由你在它上面另写文件实现。
-不 include 它时，efmt 的体积与行为一字不变。
+自己不产生任何行为代码 —— 序列化由它上面的格式文件实现，**一个格式一个文件、一个开关**：
+
+| 文件 | 内容 | 不要它就 |
+|------|------|---------|
+| `eserde/serde.hpp` | 本节基座：能力标签 / schema / 字段访问 | 不 include |
+| `eserde/traits.hpp` | 取值形状判定（字符串 / 容器 / 可写）与取值搬运助手，**各格式共用** | 不 include |
+| `eserde/json.hpp` | JSON 文本（见 5.7） | 不 include |
+| `eserde/cbor.hpp` | CBOR 二进制（见 5.8） | 不 include |
+| `eserde/eserde.hpp` | 汇总头：按 `ESERDE_ENABLE_*` 拉格式（见 5.9） | 不 include |
+
+不 include 时 efmt 的体积与行为一字不变：**include 就是开关**，多一个格式才多一份代码。
 
 ```cpp
 #include <middleware/efmt/core/format.hpp>
@@ -658,6 +667,93 @@ E_FMT_DERIVE(struct cfg {
 - 认不出的键**跳过**（前向兼容）；值类型不对是 `type_mismatch`；JSON 本身坏了是 `syntax`
 - 错误码：`ok / syntax / type_mismatch / truncated / too_deep / unsupported`，
   `error_name()` 给字符串 —— **不抛异常**
+
+**能力门禁（v1.10 起真正生效）**：`write_to` 要求类型声明了 `Serialize`，`read_from` 要求
+`Deserialize`（`E_FMT_DERIVE(struct X { ... }, Debug, Serialize, Deserialize)`）：
+
+- 检查覆盖**每一个被遍历到的结构体**，包括嵌套成员 —— 结构体套结构体时里层也要各自声明；
+- 标量 / 枚举 / 容器是**基础类型**，天然可（反）序列化，不需要标签（枚举因此不用改 `E_FMT_DERIVE_ENUM`）；
+- 两个方向各自独立：只写不读的类型写 `Serialize` 就够；
+- 缺标签是**编译期报错**（不是静默跳过），错误文案直接给出该写什么。
+
+### 5.8 二进制：`eserde::cbor`（可选，CBOR 子集）
+
+同一个基座上的二进制格式。**写出来的字节是合法 CBOR（RFC 8949）** —— Python `cbor2` /
+Node `cbor-x` / 任何语言的解码器都能直接读；这就是选 CBOR 而不是自研私有格式的理由
+（互通白送、还能拿现成实现做对拍）。零第三方、零异常、零动态分配，std 与 ETL 容器同一套代码。
+
+```cpp
+#include <eserde/cbor.hpp>
+
+unsigned char buf[64];
+const std::size_t need = eserde::cbor::write_to(buf, sizeof(buf), p);   // 返回所需字节数
+// need > sizeof(buf) 表示被截断 —— 截断的字节流不完整，别拿去解码
+
+person q{};
+if (eserde::cbor::read_from(buf, need, q) != eserde::cbor::error::ok) { /* error_name() */ }
+```
+
+除接口类型与下表三处，其余语义与 JSON 完全一致：snprintf 语义、失败不动原对象、
+错误码同名同形、字段标签、能力门禁。
+
+| | JSON | CBOR |
+|---|---|---|
+| 接口 | `write_to(char*, size, obj)` / `read_from(string_view, obj)` | `write_to(unsigned char*, size, obj)` / `read_from(const unsigned char*, size, obj)` |
+| 枚举 | 写**取值名**字符串 | 写**底层整数**（二进制要的是字节数）；读端整数与取值名都收 |
+| 浮点 | NaN / Inf 只能写成 `null` | **原样传**（`0xFA`/`0xFB`） |
+
+子集边界（写端只写这些，读端只收这些 + 无损处的宽容）：
+
+| CBOR 特性 | 这里怎么做 |
+|-----------|-----------|
+| 整数 major 0/1 | 写最短编码；读收 1/2/4/8 字节的全部合法长度 |
+| 文本串 major 3 | 双向；map 的键也是文本串（直接指向输入缓冲：不拷贝、无长度上限） |
+| 数组 / map major 4/5 | **只写定长**：要能问出元素个数 → 用有 `size()` 的容器；`std::forward_list` 这种问不出长度的编译期报错 |
+| 浮点 | 写 `0xFA`(float) / `0xFB`(double)；读端额外收 `0xF9`(half) |
+| bool / null | `0xF4` / `0xF5` / `0xF6`；`null` 与 JSON 一样表示"保持原值" |
+| 字节串 major 2 | 不写（`uint8_t` 容器按整数数组写）；读端只在**跳过未知键**时略过它，出现在字段位置上报 `type_mismatch` |
+| tag / bignum / 不定长 / undefined | **不支持** → `unsupported`（不会静默读错） |
+| map 键排序（RFC 8949 §4.2 确定性编码） | 不做：按声明顺序写，合法但非 canonical |
+
+字段标签同样复用 `[[efmt::arg(...)]]`，只是换个格式名：
+
+```cpp
+E_FMT_DERIVE(struct cfg {
+  [[efmt::arg(cbor = "user_name")]] std::string name;   // CBOR 的键改成 user_name
+  [[efmt::arg(cbor = "skip")]]      int internal;       // 不进 CBOR，也不从 CBOR 读
+}, Debug, Serialize, Deserialize);
+```
+
+**黄金字节对拍**（`tests/eserde_cbor_check.cpp`，期望值取自 RFC 8949 附录 A）：写出的要逐字节
+相等，标准编码器写出的要能读回来。
+
+```text
+1000  → 19 03 e8            1.5f    → fa 3f c0 00 00
+-1000 → 39 03 e7            1.5     → fb 3f f8 00 00 00 00 00 00
+"水"  → 63 e6 b0 b4         [1,2,3] → 83 01 02 03
+```
+
+体积：同一个结构体（10 个字段、含字符串 / 数组 / 枚举 / uint64），JSON **156 字节**、
+CBOR **94 字节**（60%）—— 数字不再是十进制文本、键只写一次、没有转义与空白。
+
+### 5.9 选择与开关：include 即启用
+
+**主通道**：直接 include 你要的格式头。不 include 的格式一个字节都不编进去 ——
+header-only 库里这是最精确的开关，不需要任何宏。
+
+**可选汇总头**：同一份源码要按板子开关格式时（配置集中在构建系统里），用 `eserde/eserde.hpp`：
+
+```text
+-DESERDE_ENABLE_JSON=1     # 默认 1
+-DESERDE_ENABLE_CBOR=1     # 默认 0（缺省不替你决定）
+```
+
+```cpp
+#include <eserde/eserde.hpp>   // = 按上面两个宏 include 对应的格式头
+```
+
+各格式自己的裁剪开关（`ESERDE_JSON_MAX_KEY` / `ESERDE_JSON_MAX_DEPTH` /
+`ESERDE_CBOR_MAX_DEPTH`）见附录 B。
 
 ---
 
@@ -1543,7 +1639,8 @@ E_FMT_FORMATTER_FN(Type, lambda)                 // 完全自定义输出（最�
 E_FMT_DERIVE(struct imu { float ax; float ay; float az; });   // 结构体（一行一个字段）
 E_FMT_DERIVE_ENUM(enum class state { idle, busy = 5, fault }); // 枚举（整段声明）
 E_FMT_DERIVE(struct person { int age; [[efmt::arg(short)]] etl::string<12> name; },
-             Debug, Serialize);                                // 字段标签 + 能力标签
+             Debug, Serialize, Deserialize);                   // 字段标签 + 能力标签
+// 能力标签是门禁：写要 Serialize、读要 Deserialize，缺了编译期报错（见 5.7）
 
 eserde::has_cap_v<T, Serialize>   eserde::field_count<T>()   eserde::field_name<T>(i)
 eserde::tag<T>(i, k)   eserde::find_by_tag<T>("short")   eserde::visit_fields(obj, vis)
@@ -1553,6 +1650,10 @@ eserde::json::write_to(buf, size, obj)   // 返回所需长度（snprintf 语义
 eserde::json::to_string(obj)             // 宿主：EFMT_ENABLE_DYNAMIC_STRING
 eserde::json::read_from(text, obj)       // 返回 error；失败不动 obj
 eserde::json::error_name(e)              // 错误码 → 字符串
+
+eserde::cbor::write_to(buf, size, obj)       // unsigned char*；返回所需字节数
+eserde::cbor::read_from(data, size, obj)     // 缓冲 + 长度；返回 error；失败不动 obj
+eserde::cbor::error_name(e)                  // 错误码与 JSON 同名同形
 
 E_FMT_FIELDS(m1, m2, ...)                   // 类型内一行：只列名字（#if/模板/超上限时用）
 E_FMT_FORMATTER_FIELDS(Type, m1, m2, ...)   // 只列字段名（≤12），名字自动转字符串
@@ -1678,7 +1779,9 @@ g++ -std=c++17 -O2 -Itests/include -DEFMT_USE_LIBC_PRINTF=0 -DEFMT_FLOAT_CHECK_I
 | `EFMT_DERIVE_ENABLE_TAGS` | 1 | 是否解析字段标签 | 设 0 后标签查询恒为空 |
 | `EFMT_DERIVE_MAX_TAGS` | 8 | 单字段标签个数上限 | 标签多时调大 |
 | `ESERDE_JSON_MAX_KEY` | 64 | JSON 键名 / 枚举名缓冲 | 键名或取值名更长时调大（超了报 truncated） |
-| `ESERDE_JSON_MAX_DEPTH` | 8 | 反序列化嵌套深度上限 | 嵌套更深时调大（栈开销随之增加） |
+| `ESERDE_JSON_MAX_DEPTH` | 8 | JSON 反序列化嵌套深度上限 | 嵌套更深时调大（栈开销随之增加） |
+| `ESERDE_CBOR_MAX_DEPTH` | 8 | CBOR 反序列化嵌套深度上限 | 嵌套更深时调大（栈开销随之增加） |
+| `ESERDE_ENABLE_JSON` / `ESERDE_ENABLE_CBOR` | 1 / 0 | 汇总头 `eserde/eserde.hpp` 拉哪些格式 | 直接 include 具体格式头时这两个宏不参与 |
 | `EFMT_MAX_FORMAT_ARGS` | 16 / 8 | 每次调用栈 = 24 B × N | `=4` 省 96 B 栈 |
 | `EFMT_PRINT_BUFFER_SIZE` | 256 / 256 | `print/println` 单行上限 | `=128` 省 128 B 栈 |
 | `EFMT_STRING_BUFFER_SIZE` | 256 | `format()` 是否需要二次分配 | 宿主调优 |
@@ -1722,7 +1825,24 @@ g++ -std=c++17 -O2 -Itests/include -DEFMT_USE_LIBC_PRINTF=0 -DEFMT_FLOAT_CHECK_I
 
 ---
 
-- **v1.9** `E_FMT_DERIVE` 带能力标签 + 字段标签解析 + `eserde` 基座（本版）
+- **v1.10** 多格式分层 + 能力门禁真正生效（本版）
+  - **分层**：取值形状判定与取值搬运助手提到 **`eserde/traits.hpp`**（json / cbor 共用，加格式不用抄
+    一遍）；字段键名策略泛化成 `eserde::field_key<T>(i, "格式名")` / `field_skipped<T>(i, ...)`
+    —— **标签名就是格式名**，`[[efmt::arg(cbor = "别名")]]` 与新格式零成本对接
+  - **`eserde::cbor`**：CBOR（RFC 8949）子集，二进制序列化 / 反序列化。定长头 / 最短整数编码 /
+    文本串 / `0xFA`·`0xFB` 浮点（**NaN·Inf 原样传**，不像 JSON 只能写 null）；与 JSON 共用
+    snprintf 语义、失败不动原对象、错误码同名同形、字段标签。写出的字节标准解码器直接能读；
+    裁剪开关 `ESERDE_CBOR_MAX_DEPTH`
+  - **能力标签真正生效**：`write_to` 要 `Serialize`、`read_from` 要 `Deserialize`，检查覆盖
+    每一个被遍历到的结构体（含嵌套成员）；标量 / 枚举 / 容器是基础类型不需要标签，所以
+    `E_FMT_DERIVE_ENUM` 与 efmt 本体一行没动。缺标签 = 编译期报错
+  - **开关**：include 即启用（主通道）+ 可选汇总头 `eserde/eserde.hpp`
+    （`ESERDE_ENABLE_JSON` 默认 1、`ESERDE_ENABLE_CBOR` 默认 0）
+  - 测试：`tests/eserde_cbor_check.cpp`（93 项 × 宿主/嵌入式；**黄金字节取自 RFC 8949 附录 A**）、
+    `tests/eserde_cbor_etl_check.cpp`（ETL 类型）、反例 `eserde_compile_fail_caps.cpp` /
+    `eserde_compile_fail_caps_read.cpp`；`eserde_json_check.cpp` / `_etl` 补能力标签
+
+- **v1.9** `E_FMT_DERIVE` 带能力标签 + 字段标签解析 + `eserde` 基座
   - 接口：**`E_FMT_DERIVE(声明, 能力...)`** —— 第一个参数是声明本身，其后都是能力标签
     （`E_FMT_DERIVE(struct person { ... }, Debug, Serialize)`）。声明里不能有顶层逗号
     （预处理器按顶层逗号切参数），字段一行一个；类型名带逗号的先 `typedef`；
