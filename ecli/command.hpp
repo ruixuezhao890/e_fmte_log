@@ -7,9 +7,12 @@
  *
  *                   设计只用三句话就能说完：
  *                     1. 命令表是一个【零堆静态数组】：{名字, 帮助, 处理函数 thunk}
- *                     2. 命令名允许带空格 —— "wifi set" 就是子命令，匹配规则是
- *                        【最长 token 前缀】（"wifi set x" 命中 "wifi set"，
- *                        而不是 "wifi"），所以不需要树、不需要插值、不需要 new
+ *                     2. 命令名允许带空格 —— "wifi set" 就是子命令；从 v1.11 起还允许
+ *                        【模式段】："wifi set :ssid"（一个 token → 捕获成 ssid）、
+ *                        "log *rest"（余下 token 全收）。匹配规则是
+ *                        【段特异性优先，再比 token 数】，所以不需要树、不需要 new
+ *                     3. 每个命令一个自包含 thunk：自己声明参数类型、自己 parse、
+ *                        自己把帮助/报错写回 reply；参数类型仍然由 E_FMT_DERIVE 推导
  *                     3. 每个命令一个自包含 thunk：自己声明参数类型、自己 parse、
  *                        自己把帮助/报错写回 reply；参数类型仍然由 E_FMT_DERIVE 推导
  *
@@ -40,6 +43,22 @@
 
 #include <cstddef>
 #include <string_view>
+
+// 命令名里的模式段（:name / *name）用 matchit 的 extractor 协议匹配。
+// 关掉它就退回"只认字面量段"的老行为（省掉 matchit 的编译期与体积开销）。
+#ifndef ECLI_ENABLE_PATTERN_COMMANDS
+#define ECLI_ENABLE_PATTERN_COMMANDS 1
+#endif
+
+// 一次命令最多记几个捕获（:name / *name 各算一个）
+#ifndef ECLI_MAX_CAPTURES
+#define ECLI_MAX_CAPTURES 8
+#endif
+
+#if ECLI_ENABLE_PATTERN_COMMANDS
+#include <matchit/matchit.h>   // 第三方便携库（本地改造版，见 matchit/PATCHES.md）
+#include <optional>
+#endif
 
 #if EFMT_ENABLE_STDIO
 #include <cstdio>
@@ -123,16 +142,68 @@ inline reply string_reply(std::string &out) { return reply{&out, &detail::string
 #endif
 
 // ---------------------------------------------------------------------------
+// 命令名模式里捕获到的东西
+// ---------------------------------------------------------------------------
+//   "wifi set :ssid"  → ssid 收一个 token
+//   "log *rest"       → rest 收余下的全部 token（可以是 0 个；只能出现在模式末尾）
+// 捕获值会【按名字注入到参数结构体的同名字段】（扫 schema 找字段）：
+//   :name → 标量/字符串/枚举字段直接赋该 token
+//   *name → 容器字段逐个 push（std::vector / etl::vector）；标量字段不注入
+// 没有同名字段也不报错：值仍然能在处理函数的 params 形参里拿到。
+struct params {
+  static constexpr std::size_t capacity = ECLI_MAX_CAPTURES;
+
+  std::string_view names[ECLI_MAX_CAPTURES]{};
+  std::string_view values[ECLI_MAX_CAPTURES]{};   // :name = 该 token；*name = 收下的第一个 token（可能空）
+  std::size_t rest_from[ECLI_MAX_CAPTURES]{};     // *name：在本次命令 token 表里的起点
+  const std::string_view *tokens = nullptr;       // *name 的取值从这里往后读
+  std::size_t token_count = 0;
+  std::size_t count = 0;                          // 捕获项数
+  std::size_t spec = 0;                           // 匹配时吃掉的段数（分发排序用）
+  bool overflow = false;                          // 捕获项超过 ECLI_MAX_CAPTURES
+
+  std::size_t size() const { return count; }
+  std::string_view name_at(std::size_t i) const { return i < count ? names[i] : std::string_view{}; }
+  std::string_view value_at(std::size_t i) const { return i < count ? values[i] : std::string_view{}; }
+  bool is_rest(std::size_t i) const { return i < count && rest_from[i] != npos; }
+  std::size_t rest_count(std::size_t i) const {
+    if (!is_rest(i)) return 0;
+    return token_count > rest_from[i] ? token_count - rest_from[i] : 0;
+  }
+  std::string_view rest_at(std::size_t i, std::size_t k) const {
+    if (!is_rest(i) || k >= rest_count(i) || tokens == nullptr) return std::string_view{};
+    return tokens[rest_from[i] + k];
+  }
+  bool has(std::string_view name) const {
+    for (std::size_t i = 0; i < count; ++i) {
+      if (names[i] == name) return true;
+    }
+    return false;
+  }
+  std::string_view get(std::string_view name, std::string_view fallback = {}) const {
+    for (std::size_t i = 0; i < count; ++i) {
+      if (names[i] == name) return values[i];
+    }
+    return fallback;
+  }
+};
+
+// ---------------------------------------------------------------------------
 // 命令表
 // ---------------------------------------------------------------------------
-// 处理函数签名统一是 void(const Args&, reply)：参数已解析完，reply 用来回话。
+// 处理函数签名有两种（都行，按你写的那个自动选）：
+//   void(const Args&, reply)                  不需要看捕获
+//   void(const Args&, const params&, reply)   想看 :name / *rest 的原始值
+// reply 用来回话；不用就留空名字，避免 -Wunused-parameter。
+// 参数已解析完（选项 + 位置参数），命令名模式吃掉的 token 不在里面。
 // 不要回话的处理函数把第二个参数留空名字即可（避免 -Wunused-parameter）：
 //   void status_run(const status_args& a, ecli::reply) { ... }
-using invoke_fn = error (*)(std::string_view name, std::string_view about,
+using invoke_fn = error (*)(std::string_view name, std::string_view about, const params &p,
                             const token_list &tokens, reply out);
 
 struct command {
-  std::string_view name;   // 可含空格 = 子命令；按最长 token 前缀匹配
+  // 命令名：空格分段的模式 —— 字面量 "wifi" / 参数段 ":ssid" / 余下段 "*rest"（只能收尾）
+  std::string_view name;
   std::string_view help;   // 命令表与 help <命令> 里显示的说明
   invoke_fn invoke;        // 由 command_of<Args, Fn>() 生成的自包含 thunk
 };
@@ -149,21 +220,129 @@ inline token_list skip_tokens(const token_list &tokens, std::size_t n) {
   return out;
 }
 
-// 命令名按空格切词，逐词与 token 比：全中 → 消耗的 token 数；否则 0
-inline std::size_t match_command_name(std::string_view name, const token_list &tokens) {
-  std::size_t k = 0;
-  std::size_t i = 0;
-  std::size_t words = 0;
+#if ECLI_ENABLE_PATTERN_COMMANDS
+// 段模式的"提取器"：命中就把 token 交出去（matchit 的 app/extractor 协议）
+//   ":name" / "*name" → 任意 token 都算命中（值被捕获）
+//   字面量            → 必须与 token 相等
+struct segment_extractor {
+  std::string_view pattern{};
+
+  std::optional<std::string_view> operator()(std::string_view token) const {
+    if (!pattern.empty() && (pattern[0] == ':' || pattern[0] == '*')) return token;
+    if (token == pattern) return token;
+    return std::nullopt;
+  }
+};
+
+// 一个 token ↔ 一个段模式：判定交给 matchit（app/extractor + some + 通配）。
+// 捕获值不用 matchit 的 Id 绑定 —— Id 存的是【指针】，绑定的是 match 表达式里的临时值，
+// 出了那个表达式就悬垂（第一版就是这么拿到垃圾的）。token 本来就在手上，命中即取值。
+inline bool match_segment(std::string_view pattern, std::string_view token,
+                          std::string_view &captured) {
+  const bool hit = ::matchit::match(token)(
+      ::matchit::pattern |
+              ::matchit::app(segment_extractor{pattern}, ::matchit::some(::matchit::_)) = true,
+      ::matchit::pattern | ::matchit::_ = false);
+  if (hit) captured = token;
+  return hit;
+}
+#else
+// 裁剪版（ECLI_ENABLE_PATTERN_COMMANDS=0）：:name / *name 当字面量处理
+inline bool match_segment(std::string_view pattern, std::string_view token,
+                          std::string_view &captured) {
+  if (token != pattern) return false;
+  captured = token;
+  return true;
+}
+#endif
+
+// 命令名（模式串）与 token 前缀匹配：
+//   返回值 = 吃掉的 token 数（0 = 不匹配）；p.spec = 吃掉的【非 * 段】数（分发排序用）
+//   "log *rest" 会把余下 token 全吃掉；所以 * 段不参与"特异性"计数 —— 否则一个
+//   catch-all 命令会盖掉更具体的命令（"sensor read" vs "sensor *rest"）。
+inline std::size_t match_command_pattern(std::string_view name, const token_list &tokens,
+                                         params &p) {
+  std::size_t k = 0;   // token 下标
+  std::size_t i = 0;   // name 里的位置
+  std::size_t spec = 0;
   while (i < name.size()) {
     while (i < name.size() && name[i] == ' ') ++i;
     if (i >= name.size()) break;
     const std::size_t begin = i;
     while (i < name.size() && name[i] != ' ') ++i;
-    if (k >= tokens.count || tokens.items[k] != name.substr(begin, i - begin)) return 0;
+    const std::string_view seg = name.substr(begin, i - begin);
+#if ECLI_ENABLE_PATTERN_COMMANDS
+    const bool is_rest = !seg.empty() && seg[0] == '*';
+    const bool is_param = !seg.empty() && seg[0] == ':';
+#else
+    const bool is_rest = false;   // 裁剪版：整段当字面量
+    const bool is_param = false;
+#endif
+
+    if (is_rest) {   // 余下全收（可为空）——只能出现在末尾
+      if (p.count < params::capacity) {
+        p.names[p.count] = seg.substr(1);
+        p.values[p.count] = k < tokens.count ? tokens.items[k] : std::string_view{};
+        p.rest_from[p.count] = k;
+        ++p.count;
+      } else {
+        p.overflow = true;
+      }
+      p.spec = spec;
+      return tokens.count;
+    }
+
+    if (k >= tokens.count) return 0;   // 段比 token 多 → 不匹配
+    std::string_view captured{};
+    if (!match_segment(seg, tokens.items[k], captured)) return 0;
+    if (is_param) {   // 参数段：记下来
+      if (p.count < params::capacity) {
+        p.names[p.count] = seg.substr(1);
+        p.values[p.count] = captured;
+        p.rest_from[p.count] = npos;
+        ++p.count;
+      } else {
+        p.overflow = true;
+      }
+    }
     ++k;
-    ++words;
+    ++spec;
   }
-  return words;
+  p.spec = spec;
+  return k;
+}
+
+// help <命令…> 用：用户给的那几个 token 是否是这个命令模式的前缀（参数段算任意 token）
+// 返回匹配到的段数（0 = 不是）；用于"help wifi set" 能命中 "wifi set :ssid"
+inline std::size_t match_command_prefix(std::string_view name, const token_list &tokens) {
+  std::size_t k = 0;
+  std::size_t i = 0;
+  std::size_t spec = 0;
+  while (i < name.size() && k < tokens.count) {
+    while (i < name.size() && name[i] == ' ') ++i;
+    if (i >= name.size()) break;
+    const std::size_t begin = i;
+    while (i < name.size() && name[i] != ' ') ++i;
+    const std::string_view seg = name.substr(begin, i - begin);
+    if (seg.empty()) break;
+#if ECLI_ENABLE_PATTERN_COMMANDS
+    const bool is_rest = seg[0] == '*';
+    const bool is_param = seg[0] == ':';
+#else
+    const bool is_rest = false;
+    const bool is_param = false;
+#endif
+    if (is_rest) return spec;                             // 通配尾段：前缀到此为止
+    if (is_param) {
+      ++k;                                                // 参数段：任意一个 token
+    } else if (tokens.items[k] == seg) {
+      ++k;
+    } else {
+      return 0;
+    }
+    ++spec;
+  }
+  return k == tokens.count ? spec : 0;   // 用户给的 token 必须全用上
 }
 
 // 写文本：装不下就如实追加 "(truncated)" —— 标记要【先留出位置】，
@@ -194,10 +373,58 @@ void send_error(std::string_view name, error e, const error_info &info, reply ou
   send_text(need, buf, sizeof(buf), out);
 }
 
-// 每个命令的自包含 thunk：声明参数类型 → 解析 → 回话 → 交给处理函数
+// 命令名模式捕获到的值 → 按名字注入参数结构体的同名字段
+//   找不到同名字段：跳过（值仍在 params 里，处理函数能看见）
+//   *name → 只注入容器字段（逐个 push）；标量字段不注入（免得"最后一个赢"这种意外）
+// 按字段名找下标：查的是编译期那张规格表（rodata），【不】用 eserde::find_field ——
+// 后者会把 efmt 的声明原文解析函数拖进固件（实测 ~1.5 KB / 类型）。
+template <typename Args>
+inline std::size_t find_field_index(std::string_view name) {
+  const option_view *opts = options_holder<Args>::value.data();
+  const std::size_t n = options_holder<Args>::count;
+  for (std::size_t i = 0; i < n; ++i) {
+    if (opts[i].field == name) return i;
+  }
+  return npos;
+}
+
+template <typename Args>
+error inject_captures(Args &obj, const params &p, error_info &info) {
+#if ECLI_ENABLE_PATTERN_COMMANDS
+  for (std::size_t i = 0; i < p.count; ++i) {
+    const std::size_t idx = find_field_index<Args>(p.name_at(i));
+    if (idx == npos) continue;
+    if (p.is_rest(i)) {
+      if (!option<Args>(idx).repeatable) continue;
+      for (std::size_t k = 0; k < p.rest_count(i); ++k) {
+        const error e = assign_capture_at(obj, idx, p.rest_at(i, k));
+        if (e != error::ok) {
+          info.option_index = idx;
+          info.token = p.rest_at(i, k);
+          return e;
+        }
+      }
+      continue;
+    }
+    const error e = assign_capture_at(obj, idx, p.value_at(i));
+    if (e != error::ok) {
+      info.option_index = idx;
+      info.token = p.value_at(i);
+      return e;
+    }
+  }
+#else
+  (void)obj;   // ECLI_ENABLE_PATTERN_COMMANDS=0：没有模式段可捕获，整段编译掉
+  (void)p;
+  (void)info;
+#endif
+  return error::ok;
+}
+
+// 每个命令的自包含 thunk：声明参数类型 → 解析参数 → 注入捕获 → 回话 → 交给处理函数
 template <typename Args, void (*Fn)(const Args &, reply)>
-error command_thunk(std::string_view name, std::string_view about, const token_list &tokens,
-                    reply out) {
+error command_thunk(std::string_view name, std::string_view about, const params &p,
+                    const token_list &tokens, reply out) {
   Args a{};
   error_info info{};
   const error e = parse(tokens, a, &info);
@@ -209,16 +436,51 @@ error command_thunk(std::string_view name, std::string_view about, const token_l
     send_error<Args>(name, e, info, out);
     return e;
   }
+  const error ie = inject_captures(a, p, info);   // 捕获后写：同名时以模式捕获为准
+  if (ie != error::ok) {
+    send_error<Args>(name, ie, info, out);
+    return ie;
+  }
   Fn(a, out);
+  return error::ok;
+}
+
+// 想看原始捕获值的处理函数走这版：Fn(const Args&, const params&, reply)
+template <typename Args, void (*Fn)(const Args &, const params &, reply)>
+error command_thunk_with_params(std::string_view name, std::string_view about, const params &p,
+                                const token_list &tokens, reply out) {
+  Args a{};
+  error_info info{};
+  const error e = parse(tokens, a, &info);
+  if (e == error::help_requested) {
+    send_help<Args>(name, about, out);
+    return e;
+  }
+  if (e != error::ok) {
+    send_error<Args>(name, e, info, out);
+    return e;
+  }
+  const error ie = inject_captures(a, p, info);
+  if (ie != error::ok) {
+    send_error<Args>(name, ie, info, out);
+    return ie;
+  }
+  Fn(a, p, out);
   return error::ok;
 }
 
 }  // namespace detail
 
-// 把 (参数类型, 处理函数) 变成命令表里的一项（编译期，零运行时代价）
+// 把 (参数类型, 处理函数) 变成命令表里的一项（编译期，零运行时代价）。
+// 两个重载按处理函数签名自动选：void(const Args&, reply) 或 void(const Args&, const params&, reply)
 template <typename Args, void (*Fn)(const Args &, reply)>
 inline constexpr invoke_fn command_of() {
   return &detail::command_thunk<Args, Fn>;
+}
+
+template <typename Args, void (*Fn)(const Args &, const params &, reply)>
+inline constexpr invoke_fn command_of() {
+  return &detail::command_thunk_with_params<Args, Fn>;
 }
 
 // ---------------------------------------------------------------------------
@@ -257,7 +519,9 @@ template <std::size_t N> std::size_t write_command_list(const command (&table)[N
 // ---------------------------------------------------------------------------
 // 分发
 // ---------------------------------------------------------------------------
-// 内置词（命令表里别用）：help / -h / --help / ?  —— 它们永远走帮助，不执行处理函数。
+// 内置词（命令表里别用）：help / -h / --help / ? 与 -V / --version。
+// 匹配规则：段特异性优先（* 段不算），再比吃掉的 token 数 —— 所以
+// "sensor read" 会赢过 "sensor *rest"，"wifi set :ssid" 会赢过 "wifi"。
 template <std::size_t N>
 error dispatch(const command (&table)[N], const token_list &tokens, reply out) {
   if (tokens.bad_quote) {
@@ -284,12 +548,14 @@ error dispatch(const command (&table)[N], const token_list &tokens, reply out) {
       write_command_list(table, out);
       return error::help_requested;
     }
+    // help <命令…>：用户给的 token 是某个命令模式的前缀就命中（"help wifi set" 也能
+    // 命中 "wifi set :ssid"），命中最具体的那个
     std::size_t best = npos;
-    std::size_t best_len = 0;
+    std::size_t best_spec = 0;
     for (std::size_t i = 0; i < N; ++i) {
-      const std::size_t len = detail::match_command_name(table[i].name, rest);
-      if (len > best_len) {
-        best_len = len;
+      const std::size_t spec = detail::match_command_prefix(table[i].name, rest);
+      if (spec > best_spec) {
+        best_spec = spec;
         best = i;
       }
     }
@@ -304,16 +570,27 @@ error dispatch(const command (&table)[N], const token_list &tokens, reply out) {
     token_list help_tokens{};
     help_tokens.items[0] = std::string_view("-h");
     help_tokens.count = 1;
-    return table[best].invoke(table[best].name, table[best].help, help_tokens, out);
+    params none{};   // 帮助路径不做捕获，也不注入
+    return table[best].invoke(table[best].name, table[best].help, none, help_tokens, out);
   }
 
   std::size_t best = npos;
-  std::size_t best_len = 0;
+  std::size_t best_spec = 0;
+  std::size_t best_used = 0;
+  params best_params{};
+  best_params.tokens = tokens.items;
+  best_params.token_count = tokens.count;
   for (std::size_t i = 0; i < N; ++i) {
-    const std::size_t len = detail::match_command_name(table[i].name, tokens);
-    if (len > best_len) {   // 最长前缀优先："wifi set x" 命中 "wifi set" 而不是 "wifi"
-      best_len = len;
+    params p{};
+    p.tokens = tokens.items;
+    p.token_count = tokens.count;
+    const std::size_t used = detail::match_command_pattern(table[i].name, tokens, p);
+    if (used == 0) continue;
+    if (p.spec > best_spec || (p.spec == best_spec && used > best_used)) {
       best = i;
+      best_spec = p.spec;
+      best_used = used;
+      best_params = p;
     }
   }
   if (best == npos) {
@@ -323,8 +600,8 @@ error dispatch(const command (&table)[N], const token_list &tokens, reply out) {
     write_command_list(table, out);
     return error::unknown_command;
   }
-  const token_list rest = detail::skip_tokens(tokens, best_len);
-  return table[best].invoke(table[best].name, table[best].help, rest, out);
+  const token_list rest = detail::skip_tokens(tokens, best_used);
+  return table[best].invoke(table[best].name, table[best].help, best_params, rest, out);
 }
 
 // 一行文本（串口 / 蓝牙 / 键盘这条路上用；scratch 由调用方管寿命）

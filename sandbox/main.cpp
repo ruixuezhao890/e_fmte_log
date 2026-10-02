@@ -95,9 +95,11 @@ E_FMT_DERIVE(struct status_cmd_args {
   [[efmt::arg(short = "v", long = "verbose", help = "show details")]] bool verbose = false;
 }, Cli);
 
+// ssid 不写选项 —— 它由命令名模式 "wifi set :ssid" 捕获（matchit 的 extractor），
+// 所以标 skip（不进选项表），值由 ecli 注入到这个同名字段。
 E_FMT_DERIVE(struct wifi_set_args {
-  [[efmt::arg(short = "s", long = "ssid", required, help = "network name")]] etl::string<16> ssid;
-  [[efmt::arg(short = "p", long = "pass", help = "password")]]                etl::string<16> pass;
+  [[efmt::arg(skip)]]                                          etl::string<16> ssid;
+  [[efmt::arg(short = "p", long = "pass", help = "password")]] etl::string<16> pass;
 }, Cli);
 
 static void status_cmd(const status_cmd_args &a, ecli::reply out) {
@@ -132,7 +134,7 @@ static void echo_cmd(const echo_cmd_args &a, ecli::reply out) {
 
 static constexpr ecli::command kCommands[] = {
     {"status", "show link status", ecli::command_of<status_cmd_args, status_cmd>()},
-    {"wifi set", "set ssid", ecli::command_of<wifi_set_args, wifi_set_cmd>()},
+    {"wifi set :ssid", "set ssid", ecli::command_of<wifi_set_args, wifi_set_cmd>()},   // :ssid 捕获
     {"echo", "echo text back", ecli::command_of<echo_cmd_args, echo_cmd>()},
 };
 
@@ -182,8 +184,8 @@ static void section(const char *title) { std::printf("\n--- %s ---\n", title); }
 // 【提示符下输入什么】一行一条命令、回车执行；参数用空格分开，写 --opt=value 或 --opt value 都行
 //     status                        → 显示链路状态
 //     status -v                     → 带细节（-v 短选项 = --verbose）
-//     wifi set -s mynet             → 子命令：命令名带空格，按【最长前缀】匹配
-//     wifi set --ssid mynet -p pw   → 长选项 / 短选项混着用
+//     wifi set mynet                → 子命令 + 命令名模式 "wifi set :ssid"：mynet 被捕获进 ssid
+//     wifi set mynet -p pw          → 模式捕获 + 普通选项混着用
 //     echo --upper hello            → 开关 + 位置参数
 //     echo "hello world"            → 引号包住空格（算一个 token）
 //     help                          → 列出命令表
@@ -409,7 +411,7 @@ int main(int argc, char **argv) {
   {
     char reply[256];
     char scratch[ECLI_MAX_LINE];
-    const char *lines[] = {"status -v", "wifi set -s mynet", "wifi set", "help wifi set", "nope"};
+    const char *lines[] = {"status -v", "wifi set mynet -p pw", "wifi set", "help wifi set", "nope"};
     for (const char *line : lines) {
       reply[0] = '\0';
       buffer_reply b{reply, sizeof(reply), 0};
@@ -425,15 +427,29 @@ int main(int argc, char **argv) {
     check("子命令分发 -v", std::string(reply), "link: up (detail)\n");
     reply[0] = '\0';
     buffer_reply b2{reply, sizeof(reply), 0};
-    (void)ecli::dispatch(kCommands, "wifi set -s office", scratch, sizeof(scratch), b2.as_reply());
-    check("子命令参数", std::string(reply), "ssid -> office (password: none)\n");
+    (void)ecli::dispatch(kCommands, "wifi set office -p pw", scratch, sizeof(scratch), b2.as_reply());
+    check("子命令 + 命令名模式捕获", std::string(reply), "ssid -> office (password: set)\n");
     reply[0] = '\0';
     buffer_reply b3{reply, sizeof(reply), 0};
     const ecli::error missing =
-        ecli::dispatch(kCommands, "wifi set", scratch, sizeof(scratch), b3.as_reply());
-    check("必填项缺失会报错并给用法",
-          missing == ecli::error::missing_required && std::string(reply).find("usage: wifi set") != std::string::npos
-              ? "ok" : "bad", "ok");
+        ecli::dispatch(kCommands, "wifi set home -p", scratch, sizeof(scratch), b3.as_reply());
+    check("取值缺失会报错并给用法",
+          missing == ecli::error::missing_value &&
+                  std::string(reply).find("usage: wifi set :ssid") != std::string::npos
+              ? "ok"
+              : "bad",
+          "ok");
+
+    // 模式段不够（:ssid 要一个 token，"wifi set" 只有两段）→ 不命中该命令；
+    // 表里也没有更短的同名命令，于是 unknown_command（想更友好就补一条表项）
+    reply[0] = '\0';
+    buffer_reply b4{reply, sizeof(reply), 0};
+    check("半截命令（段不够）= unknown_command",
+          ecli::dispatch(kCommands, "wifi set", scratch, sizeof(scratch), b4.as_reply()) ==
+                  ecli::error::unknown_command
+              ? "ok"
+              : "bad",
+          "ok");
   }
 
   std::printf("\n%d/%d checks passed\n", g_checks - g_failures, g_checks);

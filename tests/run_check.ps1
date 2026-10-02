@@ -311,6 +311,25 @@ if (Test-Path $ecli) {
         Invoke-EfmtRun 'ecli extras (embedded)' $extraEmbExe
     }
 
+    # 命令名模式段（matchit 的 extractor 做匹配）：宿主 / 嵌入式 / 关掉模式开关三配置
+    $patExe = Join-Path $out 'ecli_pattern_check.exe'
+    $patArgs = @('-std=c++17') + $baseArgs + @("-I$root", (Join-Path $PSScriptRoot 'ecli_pattern_check.cpp'), '-o', $patExe)
+    if (Invoke-EfmtBuild 'ecli command name patterns (:param / *rest)' $patArgs) {
+        Invoke-EfmtRun 'ecli patterns' $patExe
+    }
+
+    $patEmbExe = Join-Path $out 'ecli_pattern_check_embedded.exe'
+    $patEmbArgs = @('-std=c++17') + $baseArgs + @('-DEFMT_ENABLE_HOSTED=0', "-I$root", (Join-Path $PSScriptRoot 'ecli_pattern_check.cpp'), '-o', $patEmbExe)
+    if (Invoke-EfmtBuild 'ecli patterns (embedded configuration)' $patEmbArgs) {
+        Invoke-EfmtRun 'ecli patterns (embedded)' $patEmbExe
+    }
+
+    $patOffExe = Join-Path $out 'ecli_pattern_check_off.exe'
+    $patOffArgs = @('-std=c++17') + $baseArgs + @('-DECLI_ENABLE_PATTERN_COMMANDS=0', "-I$root", (Join-Path $PSScriptRoot 'ecli_pattern_check.cpp'), '-o', $patOffExe)
+    if (Invoke-EfmtBuild 'ecli patterns trimmed off' $patOffArgs) {
+        Invoke-EfmtRun 'ecli patterns (off)' $patOffExe
+    }
+
     # Negative tests: duplicate option names / a relation tag pointing at a missing field
     Invoke-EfmtCompileFail -Name 'duplicate option names' -ExpectedPattern '选项名撞车' -Arguments @('-std=c++17', '-O2', "-I$include", "-I$root", (Join-Path $PSScriptRoot 'ecli_compile_fail_names.cpp'), '-o', (Join-Path $out 'compile_fail_cli_names.exe'))
 
@@ -360,7 +379,8 @@ if ($Size) {
         @{ Name = 'cli baseline (decl only)'; Source = 'ecli_size_probe.cpp'; Defines = @('-DEFMT_ENABLE_HOSTED=0', "-I$root", '-DECLI_SIZE_PROBE_OFF=1') },
         @{ Name = 'cli parse'; Source = 'ecli_size_probe.cpp'; Defines = @('-DEFMT_ENABLE_HOSTED=0', "-I$root") },
         @{ Name = 'cli parse + help/error'; Source = 'ecli_size_probe.cpp'; Defines = @('-DEFMT_ENABLE_HOSTED=0', "-I$root", '-DECLI_SIZE_PROBE_HELP=1') },
-        @{ Name = 'cli command table (2 cmds)'; Source = 'ecli_size_probe.cpp'; Defines = @('-DEFMT_ENABLE_HOSTED=0', "-I$root", '-DECLI_SIZE_PROBE_TABLE=1') }
+        @{ Name = 'cli command table (2 cmds)'; Source = 'ecli_size_probe.cpp'; Defines = @('-DEFMT_ENABLE_HOSTED=0', "-I$root", '-DECLI_SIZE_PROBE_TABLE=1') },
+        @{ Name = 'cli pattern cmd (matchit)'; Source = 'ecli_size_probe.cpp'; Defines = @('-DEFMT_ENABLE_HOSTED=0', "-I$root", '-DECLI_SIZE_PROBE_PATTERN=1') }
     )
     foreach ($target in $targets) {
         $compiler = Get-Command $target.Cxx -ErrorAction SilentlyContinue

@@ -742,14 +742,12 @@ inline error assign_element(E &slot, std::string_view text) {
 // 一次赋值要做什么（比"两个 bool"清楚：取一个值 / 置位 / 清零 / 计数）
 enum class action { value, flag_on, flag_off, count };
 
+// 真正写字段的那一段（类型分派全在这里）。外面两个入口：
+//   assign_field   —— 普通命令行取值路径：skip 字段被守卫挡住
+//   assign_capture —— 命令名模式捕获注入：允许写 skip 字段（它正是"只由模式喂"的写法）
 template <std::size_t I, typename T>
-error assign_field(T &obj, std::string_view text, action act) {
-  if constexpr (field_skipped<T, I>()) {
-    (void)obj;
-    (void)text;
-    (void)act;
-    return error::unknown_option;   // 永远不会被匹配到；这里只是跳过类型检查
-  } else {
+error assign_member(T &obj, std::string_view text, action act) {
+  {
     using M = member_t<T, I>;
     auto &slot = ::eserde::field_at<I>(obj);
     if constexpr (std::is_same<M, bool>::value) {
@@ -835,6 +833,43 @@ error assign_field(T &obj, std::string_view text, action act) {
       return error::invalid_value;
     }
   }
+}
+
+// 普通取值路径：跳过 skip 字段（它不进命令行选项表）
+template <std::size_t I, typename T>
+error assign_field(T &obj, std::string_view text, action act) {
+  if constexpr (field_skipped<T, I>()) {
+    (void)obj;
+    (void)text;
+    (void)act;
+    return error::unknown_option;   // 永远不会被匹配到；这里只是跳过类型检查
+  } else {
+    return assign_member<I>(obj, text, act);
+  }
+}
+
+// 捕获注入路径：按 schema 下标写字段，但【不跳 skip】。
+// 只对"能取值的类型"实例化 assign_member —— 否则 skip 掉的嵌套结构体会撞上那句 static_assert。
+template <std::size_t I, typename T>
+error assign_capture_rec(T &obj, std::size_t index, std::string_view text) {
+  if (index == I) {
+    using M = member_t<T, I>;
+    if constexpr (is_value_type_v<M> || is_repeatable_v<M>) {
+      return assign_member<I>(obj, text, action::value);
+    } else {
+      return error::invalid_value;   // 这种字段喂不进捕获（例如嵌套结构体）
+    }
+  }
+  if constexpr (I + 1 < ::eserde::field_count<T>()) {
+    return assign_capture_rec<I + 1>(obj, index, text);
+  } else {
+    return error::unknown_option;
+  }
+}
+
+template <typename T>
+error assign_capture_at(T &obj, std::size_t index, std::string_view text) {
+  return assign_capture_rec<0>(obj, index, text);
 }
 
 // 按 schema 下标写第 index 个字段：编译期展开成链，运行期只走一次比较

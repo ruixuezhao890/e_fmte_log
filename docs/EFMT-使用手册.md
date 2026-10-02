@@ -933,6 +933,55 @@ dispatch(kCommands, argc, argv, stdout_reply());                                
 | `string_reply(s)` | 宿主：追加到 `std::string`（`EFMT_ENABLE_DYNAMIC_STRING`）|
 | `reply{}` | 丢弃输出（命令照跑，用于只跑副作用的场合）|
 
+#### 命令名里的模式段（`:参数` / `*余下`，由 matchit 做匹配）
+
+命令名可以写**模式段**，捕获到的值会**按名字注入到参数结构体的同名字段**，
+处理函数也能通过 `params` 形参拿到原始值：
+
+```cpp
+E_FMT_DERIVE(struct wifi_args {
+  [[efmt::arg(skip)]]                                          etl::string<16> ssid;   // 由模式喂，不进选项表
+  [[efmt::arg(short = "p", long = "pass", help = "password")]] etl::string<16> pass;
+}, Cli);
+
+E_FMT_DERIVE(struct log_args {
+  [[efmt::arg(skip)]] std::vector<std::string> rest;     // *rest → 容器：逐个 push
+}, Cli);
+
+void wifi_set_run(const wifi_args &a, reply out);          // 不需要原始捕获就用两参数版
+void log_run(const log_args &a, const params &p, reply out); // 想看捕获：`p.get("rest")` / `p.rest_at(0, k)`
+
+constexpr command kCmds[] = {
+  {"wifi set :ssid", "set ssid",   command_of<wifi_args, wifi_set_run>()},
+  {"log *rest",      "log lines",  command_of<log_args, log_run>()},
+};
+```
+
+敲 `wifi set home -p pw` → 段 `wifi`/`set` 匹配掉两个 token，`:ssid` 吃掉 `home` 注入到
+`ssid`，剩下的 `-p pw` 照常走 5.10 的选项解析。
+
+| 写法 | 含义 |
+|---|---|
+| `wifi` | 字面量段：必须与 token 相等 |
+| `:ssid` | 参数段：吃掉一个 token，按名字 `ssid` 注入同名字段（标量 / 字符串 / 枚举 / 整数）|
+| `*rest` | 余下段：吃掉余下全部 token（可为 0 个），只能放在末尾；注入**容器字段**（逐个 push）|
+
+- **匹配排序**：段特异性优先（`*rest` 不吃特异性），再比吃掉的 token 数 ——
+  所以 `"sensor read"` 会赢过 `"sensor *rest"`，`"wifi set :ssid"` 会赢过 `"wifi"`。
+- **注入规则**：字段名相同才注入；没有同名字段不报错（值在 `params` 里）。
+  `*name` 只注入容器字段，标量字段不注入（免得"最后一个赢"这种意外）。
+  同名既是选项又是捕获时，**捕获后写**（捕获赢）。要喂捕获的字段建议标 `skip`。
+- **段数要够**：`:ssid` 需要一个 token，`wifi set`（两段）**不会**命中 `"wifi set :ssid"`；
+  想让半截输入也有友好提示，就在表里再补一条 `{"wifi set", …}`。
+- **`help` 是前缀匹配**：`help wifi set` 能摸到 `"wifi set :ssid"` 并打印它的 usage。
+- **开关**：`-DECLI_ENABLE_PATTERN_COMMANDS=0` 时不 include matchit、`:name`/`*name` 当字面量，
+  体积回到集成前（见 8.2c）；捕获项上限 `ECLI_MAX_CAPTURES`（默认 8）。
+
+> 匹配部分用的是第三方 [matchit.cpp](https://github.com/BowenFu/matchit.cpp)（Apache-2.0，
+> 冻结副本在 `matchit/`，改动见 `matchit/PATCHES.md`）：我们把"一个 token 与一个段模式"的判定
+> 交给它的 extractor 协议（`app` + `some` + 通配 `_`），不自己写模式解释器。
+> 注意**别用它的 `Id<T>` 接捕获值** —— 那存的是指针，出了 match 表达式就悬垂（我们踩过）。
+
 内置帮助：`help` / `-h` / `--help` / `?` 列命令表；`help wifi set` 或 `wifi set -h` 给出该命令的
 usage + 选项表（命令自己的 `help` 字段作为说明）。这四个词是保留的，**命令表里别用**。
 
@@ -1204,7 +1253,9 @@ static_assert(!EFMT_ENABLE_ANSI_STYLES, "嵌入式不要往串口发转义序列
 | `-DECLI_SIZE_PROBE_OFF=1`（只留声明与 schema，不调用解析） | 396 B | — |
 | 默认（调用一次 `parse`：词法 + 取值 + 匹配 + 错误码 + 关系约束） | 5200 B | **+4.7 KB** |
 | `-DECLI_SIZE_PROBE_HELP=1`（再带上 `write_help` / `write_error`） | 7168 B | **+6.6 KB** |
-| `-DECLI_SIZE_PROBE_TABLE=1`（命令表：2 条命令 + 一次 `dispatch`） | 9684 B | **+9.1 KB** |
+| `-DECLI_SIZE_PROBE_TABLE=1`（命令表：2 条命令 + 一次 `dispatch`） | 10580 B | **+10.2 KB** |
+| 同上 + `-DECLI_ENABLE_PATTERN_COMMANDS=0`（不含 matchit） | 9924 B | +9.5 KB |
+| `-DECLI_SIZE_PROBE_PATTERN=1`（1 条 `:param` 模式命令，含 matchit） | 7184 B | +6.8 KB |
 
 - **帮助 / 报错文本不调用就不进固件**：只调 `parse` 时不带这 1.8 KB；`ECLI_ENABLE_HELP=0`
   另外省掉 `-h`/`--help` 的内置处理（约 52 B）。
@@ -1213,6 +1264,11 @@ static_assert(!EFMT_ENABLE_ANSI_STYLES, "嵌入式不要往串口发转义序列
 - **命令表本身**（`dispatch` + 回复通道 + 命令列表）约 1.4 KB；剩下的是**每条命令一份
   自包含 thunk（含它自己的 `parse<Args>` 实例）**，两条命令合计约 2.6 KB —— 命令多时这是主要开销，
   想省就把多个命令合并到同一个参数类型上。
+- **命令名模式段（matchit）本体约 0.6 KB**（10580 - 9924）；捕获注入与 `params` 管线约 0.24 KB
+  （9924 vs 集成前的 9684）。不用模式命令就 `-DECLI_ENABLE_PATTERN_COMMANDS=0`，一次省回来。
+- 一个反例记在这：捕获注入最初用 `eserde::find_field` 按名字查字段，结果把 efmt 的
+  **声明原文解析函数**（`struct_field_at` 等）拖进固件 —— 一个类型约 1.5 KB。改成查编译期那张
+  规格表（rodata 里的 `option_view.field`）后，命令表从 13496 降回 **10580**。
 - 参数结构体里**没有浮点字段就不会实例化浮点取值路径**（不会就此拉进浮点引擎）。
 - 整数溢出的判定刻意不用 64 位除法：带除法的那版会把 `__udivmoddi4`（720 B）拖进固件，
   改成"编译期常量比较"当场少 704 B（当次读数 5512 → 4808）。
@@ -2007,6 +2063,8 @@ g++ -std=c++17 -O2 -Itests/include -DEFMT_USE_LIBC_PRINTF=0 -DEFMT_FLOAT_CHECK_I
 | `ECLI_MAX_LINE` | 192 | 去引号 / 反转义缓冲、`line_reader` 默认行宽 | 长命令行时调大（栈占用随之增加）|
 | `ECLI_ENABLE_HELP` | 1 | usage / help 文本是否编进去 | 上线固件设 0 省 Flash（`-h` 也不再特殊处理）|
 | `ECLI_REPLY_BUFFER` | 384 | 命令表里帮助 / 报错文本的栈缓冲 | 帮助长时调大（栈占用随之增加），超长会标 `...(truncated)` |
+| `ECLI_ENABLE_PATTERN_COMMANDS` | 1 | 命令名的 `:name` / `*name` 模式段（用 matchit） | 设 0 = 不 include matchit、模式段当字面量，省约 0.6 KB 且少一层依赖 |
+| `ECLI_MAX_CAPTURES` | 8 | 一次命令最多几个捕获（`:name` / `*name` 各算一个） | 模式段更多时调大 |
 | `EFMT_MAX_FORMAT_ARGS` | 16 / 8 | 每次调用栈 = 24 B × N | `=4` 省 96 B 栈 |
 | `EFMT_PRINT_BUFFER_SIZE` | 256 / 256 | `print/println` 单行上限 | `=128` 省 128 B 栈 |
 | `EFMT_STRING_BUFFER_SIZE` | 256 | `format()` 是否需要二次分配 | 宿主调优 |

@@ -87,7 +87,10 @@
 
 ## 6. ecli 比 clap 更贴合本场景的地方
 
-1. **一份命令表吃所有输入源**：argv、串口一行文本、蓝牙、键盘（clap 绑进程 argv，
+1. **命令名模式段**：`"wifi set :ssid"` / `"log *rest"` 能从命令名里直接抽参数并注入同名字段
+   （匹配交给 [matchit.cpp](https://github.com/BowenFu/matchit.cpp) 的 extractor）；
+   clap 的子命令是静态树，命令名本身不承载参数。
+2. **一份命令表吃所有输入源**：argv、串口一行文本、蓝牙、键盘（clap 绑进程 argv，
    `get_matches_from` 只能喂字符串）。
 2. **零堆、零异常、无 panic/exit**；clap 会分配、会 `exit`。
 3. **编译期全解析**：标签 → 规格表 → 关系掩码都在编译期算完，运行时零字符串解析。

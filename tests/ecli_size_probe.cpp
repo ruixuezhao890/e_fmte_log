@@ -4,9 +4,10 @@
  * @brief          : ecli 的真实嵌入式工具链体积样例（run_check.ps1 -Size 用）
  * @attention      : 几行读数共用同一份源码，靠宏切换，差值就是各段的代价：
  *                     -DECLI_SIZE_PROBE_OFF=1      只留声明（基线：标签/schema 不产生运行时代码）
- *                     默认                         再带上 parse（词法 + 取值 + 匹配）
+ *                     默认                         再带上 parse（词法 + 取值 + 匹配 + 关系约束）
  *                     -DECLI_SIZE_PROBE_HELP=1     再带上 write_help / write_error（usage/帮助文本）
- *                     -DECLI_SIZE_PROBE_TABLE=1    改测命令表：2 条命令 + 一次分发（ecli/command.hpp）
+ *                     -DECLI_SIZE_PROBE_TABLE=1    改测命令表：2 条命令 + 一次分发
+ *                     -DECLI_SIZE_PROBE_PATTERN=1  改测模式命令：1 条 ":param" 命令（含 matchit）
  ******************************************************************************
  */
 
@@ -22,9 +23,16 @@ E_FMT_DERIVE(struct cli_args {
   [[efmt::arg(pos = "1", help = "input file")]]                    char input[32];
 }, Cli);
 
-#if defined(ECLI_SIZE_PROBE_TABLE)
+#if defined(ECLI_SIZE_PROBE_TABLE) || defined(ECLI_SIZE_PROBE_PATTERN)
 #include <ecli/command.hpp>
 
+static void uart_write(const char *data, std::size_t size) {
+  (void)data;
+  (void)size;
+}
+#endif
+
+#if defined(ECLI_SIZE_PROBE_TABLE)
 E_FMT_DERIVE(struct status_args {
   [[efmt::arg(short = "v", long = "verbose")]] bool verbose = false;
 }, Cli);
@@ -35,14 +43,22 @@ E_FMT_DERIVE(struct wifi_args {
 
 static void status_run(const status_args &, ecli::reply out) { out.put_lit("ok\n"); }
 static void wifi_run(const wifi_args &, ecli::reply) {}
-static void uart_write(const char *data, std::size_t size) {
-  (void)data;
-  (void)size;
-}
 
 static constexpr ecli::command kCmds[] = {
     {"status", "show status", ecli::command_of<status_args, status_run>()},
     {"wifi set", "set ssid", ecli::command_of<wifi_args, wifi_run>()},
+};
+#endif
+
+#if defined(ECLI_SIZE_PROBE_PATTERN)
+E_FMT_DERIVE(struct set_args {
+  [[efmt::arg(skip)]] int level = 0;   // 由 "set :level" 注入
+}, Cli);
+
+static void set_run(const set_args &, ecli::reply out) { out.put_lit("ok\n"); }
+
+static constexpr ecli::command kPatCmds[] = {
+    {"set :level", "set level", ecli::command_of<set_args, set_run>()},
 };
 #endif
 
@@ -53,6 +69,11 @@ int main() {
   char scratch[ECLI_MAX_LINE];
   const ecli::error e =
       ecli::dispatch(kCmds, "wifi set -s net", scratch, sizeof(scratch), ecli::reply_to<uart_write>());
+  return e == ecli::error::ok ? 0 : 1;
+#elif defined(ECLI_SIZE_PROBE_PATTERN)
+  char scratch[ECLI_MAX_LINE];
+  const ecli::error e =
+      ecli::dispatch(kPatCmds, "set 5", scratch, sizeof(scratch), ecli::reply_to<uart_write>());
   return e == ecli::error::ok ? 0 : 1;
 #else
   cli_args a{};
