@@ -7,6 +7,7 @@
 |---|---|
 | 第一次拿到这个仓库，想先跑起来看看效果 | [沙盒命令台：新手 10 分钟上手](SANDBOX-命令台上手指南.md) |
 | 要把库用进自己的工程（格式化 / 分级日志 / JSON·CBOR / 命令行）| [EFMT-使用手册.md](EFMT-使用手册.md)（18 章，新手向：第 1–3 章跑通，第 4–13 章查用法，第 14 章以后当字典）|
+| 要**动手写代码**：命令行工具 / JSON·CBOR 存取 / 命令名模式匹配 | **[libs/](libs/)：ecli · eserde · matchit 三份独立使用手册**（示例驱动，每段代码都有编译验证）|
 | 想知道 ecli 为什么这么设计、后面还打算做什么 | [ECLI-命令行解析-方案.md](ECLI-命令行解析-方案.md) |
 | 想知道 ecli 和 Rust clap 到底差在哪 | [ECLI-与clap的差距清单.md](ECLI-与clap的差距清单.md) |
 | 想把某次改动回滚掉 | [backup/](backup/) 下的 `*-回滚说明.md` + 同名 `.bundle` |
@@ -30,6 +31,11 @@ docs/
   EFMT-使用手册.md                  完整手册：efmt / elog / eserde / ecli 全量用法与体积实测
   ECLI-命令行解析-方案.md           ecli 的拍板结论、交付物、边界
   ECLI-与clap的差距清单.md          ecli ↔ clap 逐条对照
+  libs/                            三个库的独立使用手册（示例驱动，新手写代码看这里）
+    README.md                      三个库的分工、依赖关系、学习路线
+    ECLI-使用手册.md               命令行解析 + 命令表 + 回复通道
+    ESERDE-使用手册.md             能力基座 + JSON + CBOR
+    MATCHIT-使用手册.md            第三方 matchit 的用法与本仓库的接缝
   backup/                          每次大改前的 git bundle + 回滚说明
 ```
 
