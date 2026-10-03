@@ -36,5 +36,9 @@ jobs:
           ec=${PIPESTATUS[0]}
           if [ $ec -ne 0 ]; then
             tail -n 60 /tmp/ci.log | sed 's/%/%25/g; s/\r//g' | while IFS= read -r line; do echo "::error::$line"; done
+            info=$(tail -n 16 /tmp/ci.log | tr '\n' '|' | sed 's/"/_/g' | head -c 130)
+            curl -s -X POST -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" \
+              https://api.github.com/repos/${{ github.repository }}/statuses/${{ github.sha }} \
+              -d "{\"state\":\"failure\",\"context\":\"ci/tail\",\"description\":\"$info\"}"
           fi
           exit $ec
