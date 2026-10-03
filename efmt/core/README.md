@@ -169,7 +169,7 @@ E_FMT_DERIVE(enum class state {
   idle,
   busy = 5,
 });
-println_info("{}", state::busy);                 // busy
+println_info("{}", state::busy);                 // state::busy
 ```
 
 * 机制全部**纯 C++17**：`extern` + `decltype` 抓类型、`#__VA_ARGS__` 编译期解析声明文本、
@@ -180,7 +180,8 @@ println_info("{}", state::busy);                 // busy
 * **出错一律编译报错**：解析不出、字段数对不上、成员缺格式化器 —— 不静默输出错名字
 * 代价：每个类型约 **+40~90 B Flash**（静态名字表按字段数缩放后，Cortex-M4 `-Os` 实测；
   旧实现每类型固定 400 B 的 rodata 表，现在表长 = 字段数）；
-  带类型名输出要多 1.35 KB，所以默认关（`EFMT_DERIVE_SHOW_TYPE=1` 可开）
+  类型名默认开（结构体 `imu { ... }`、枚举 `state::x`，Rust Debug 风格）；`EFMT_DERIVE_SHOW_TYPE=0`
+  关回 `{ ax = 1.5 }` / `busy`，省 1.35 KB Flash（Cortex-M4 实测）
 * 边界（声明里有 `#if`、模板结构体、枚举非字面量初始值、>16 字段）→ 用类型内一行
   `E_FMT_FIELDS(字段, ...)` 兜底；老的 `E_FMT_FORMATTER_FN`/AUTO 仍可用
 

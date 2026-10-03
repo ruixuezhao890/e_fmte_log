@@ -167,21 +167,21 @@ static void check_text(const char *what, const std::string &actual, const char *
 
 int main() {
   // ---- 基本形态 ----
-  CHECK_TEXT(text("{}", imu{1.5f, 2.5f, 3.5f}), "{ ax = 1.5, ay = 2.5, az = 3.5 }");
-  CHECK_TEXT(text("{}", one_field{7}), "{ only = 7 }");
+  CHECK_TEXT(text("{}", imu{1.5f, 2.5f, 3.5f}), "imu { ax = 1.5, ay = 2.5, az = 3.5 }");
+  CHECK_TEXT(text("{}", one_field{7}), "one_field { only = 7 }");
   CHECK_TEXT(text("{}", full16{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}),
-             "{ a = 1, b = 2, c = 3, d = 4, e = 5, f = 6, g = 7, h = 8, i = 9, j = 10, "
+             "full16 { a = 1, b = 2, c = 3, d = 4, e = 5, f = 6, g = 7, h = 8, i = 9, j = 10, "
              "k = 11, l = 12, m = 13, n = 14, o = 15, p = 16 }");
 
   // ---- 位域 / 默认值 / 静态成员 / 成员函数 ----
   with_bits b{};
   b.seq = 7;
   b.flags = 3;
-  CHECK_TEXT(text("{}", b), "{ seq = 7, flags = 3, gain = 2 }");
+  CHECK_TEXT(text("{}", b), "with_bits { seq = 7, flags = 3, gain = 2 }");
 
   // ---- 嵌套（内层推导 / 内层没推导）----
   CHECK_TEXT(text("{}", nested{imu{1.0f, 2.0f, 3.0f}, raw_pair{4, 5}, 6}),
-             "{ sample = { ax = 1, ay = 2, az = 3 }, pair = (4, 5), n = 6 }");
+             "nested { sample = imu { ax = 1, ay = 2, az = 3 }, pair = raw_pair (4, 5), n = 6 }");
 
   // ---- 数组 ----
   with_arrays a{};
@@ -190,38 +190,38 @@ int main() {
   std::strncpy(a.name, "imu0", sizeof(a.name) - 1);
   for (int i = 0; i < 10; ++i) a.many[i] = i;
   CHECK_TEXT(text("{}", a),
-             "{ ints = [1, 2, 3], floats = [1.5, 2.5], name = imu0, "
+             "with_arrays { ints = [1, 2, 3], floats = [1.5, 2.5], name = imu0, "
              "many = [0, 1, 2, 3, 4, 5, 6, 7, ...] }");
 
   // ---- 函数指针成员 ----
   with_fnptr fn{};
   fn.id = 3;
   fn.callback = nullptr;
-  CHECK_TEXT(text("{}", fn), "{ id = 3, callback = (nil) }");
+  CHECK_TEXT(text("{}", fn), "with_fnptr { id = 3, callback = (nil) }");
 
   // ---- 类型内一行 E_FMT_FIELDS ----
-  CHECK_TEXT(text("{}", manual_fields{3, true}), "{ retry = 3, verbose = 1 }");
-  CHECK_TEXT(text("{}", with_conditional{5}), "{ base = 5 }");
-  CHECK_TEXT(text("{}", box<int>{7, 2}), "{ value = 7, tag = 2 }");
+  CHECK_TEXT(text("{}", manual_fields{3, true}), "manual_fields { retry = 3, verbose = 1 }");
+  CHECK_TEXT(text("{}", with_conditional{5}), "with_conditional { base = 5 }");
+  CHECK_TEXT(text("{}", box<int>{7, 2}), "box<int> { value = 7, tag = 2 }");
   CHECK_TEXT(text("{}", box<imu>{imu{1.0f, 2.0f, 3.0f}, 2}),
-             "{ value = { ax = 1, ay = 2, az = 3 }, tag = 2 }");
+             "box<imu> { value = imu { ax = 1, ay = 2, az = 3 }, tag = 2 }");
   CHECK_TEXT(text("{}", holds_manual{manual_fields{1, false}, box<imu>{imu{4.0f, 5.0f, 6.0f}, 2}, 9}),
-             "{ mf = { retry = 1, verbose = 0 }, "
-             "wrapped = { value = { ax = 4, ay = 5, az = 6 }, tag = 2 }, n = 9 }");
+             "holds_manual { mf = manual_fields { retry = 1, verbose = 0 }, "
+             "wrapped = box<imu> { value = imu { ax = 4, ay = 5, az = 6 }, tag = 2 }, n = 9 }");
 
   // ---- 命名空间里的类型 ----
-  CHECK_TEXT(text("{}", app::cfg{3, true}), "{ retry = 3, verbose = 1 }");
+  CHECK_TEXT(text("{}", app::cfg{3, true}), "app::cfg { retry = 3, verbose = 1 }");
 
   // ---- 限定名成员（::）----
   CHECK_TEXT(text("{}", with_qualified{detail_payload::payload{5}, 2}),
-             "{ body = { v = 5 }, n = 2 }");
+             "with_qualified { body = detail_payload::payload { v = 5 }, n = 2 }");
 #if EFMT_ENABLE_DYNAMIC_STRING
   CHECK_TEXT(text("{}", with_string_member{std::string("imu"), 3}),
-             "{ label = imu, count = 3 }");
+             "with_string_member { label = imu, count = 3 }");
 #endif
 
   // ---- 字段标签：带属性的字段照样是字段，标签也能解析出来 ----
-  CHECK_TEXT(text("{}", with_tags{18, 3, 1}), "{ age = 18, level = 3, extra = 1 }");
+  CHECK_TEXT(text("{}", with_tags{18, 3, 1}), "with_tags { age = 18, level = 3, extra = 1 }");
   {
     constexpr auto s = ::e_fmt::detail::parse_derived_schema<EFMT_DERIVE_MAX_FIELDS>(
         "struct with_tags { int age; [[efmt::arg(short, long)]] int level;"
@@ -235,30 +235,31 @@ int main() {
 
   // ---- 样式：{:#} 多行缩进（EFMT_DERIVE_STYLE_MULTILINE 默认开）----
   CHECK_TEXT(text("{:#}", imu{1.5f, 2.5f, 3.5f}),
-             "{\n  ax = 1.5,\n  ay = 2.5,\n  az = 3.5\n}");
-  CHECK_TEXT(text("{:#}", one_field{7}), "{\n  only = 7\n}");
+             "imu {\n  ax = 1.5,\n  ay = 2.5,\n  az = 3.5\n}");
+  CHECK_TEXT(text("{:#}", one_field{7}), "one_field {\n  only = 7\n}");
   // 嵌套成员固定单行（缩进不乱），只有顶层多行
   CHECK_TEXT(text("{:#}", nested{imu{1.0f, 2.0f, 3.0f}, raw_pair{4, 5}, 6}),
-             "{\n  sample = { ax = 1, ay = 2, az = 3 },\n  pair = (4, 5),\n  n = 6\n}");
+             "nested {\n  sample = imu { ax = 1, ay = 2, az = 3 },\n  pair = raw_pair (4, 5),\n  n = 6\n}");
   // 类型内一行 E_FMT_FIELDS 同样支持
-  CHECK_TEXT(text("{:#}", manual_fields{3, true}), "{\n  retry = 3,\n  verbose = 1\n}");
+  CHECK_TEXT(text("{:#}", manual_fields{3, true}), "manual_fields {\n  retry = 3,\n  verbose = 1\n}");
 
-  // ---- 枚举 ----
-  CHECK_TEXT(text("{}", state::idle), "idle");
-  CHECK_TEXT(text("{}", state::busy), "busy");
-  CHECK_TEXT(text("{}", state::fault), "fault");
-  CHECK_TEXT(text("{}", state::down), "down");
-  CHECK_TEXT(text("{}", static_cast<state>(99)), "99");
-  CHECK_TEXT(text("{}", static_cast<state>(-2)), "down");
-  CHECK_TEXT(text("{:>8}", state::busy), "    busy");   // 尊重宽度/对齐
-  CHECK_TEXT(text("{}", code::ok), "ok");
-  CHECK_TEXT(text("{}", code::warn), "warn");
-  CHECK_TEXT(text("{}", code::fail), "fail");
-  CHECK_TEXT(text("{}", static_cast<code>(77)), "77");
+  // ---- 枚举：取值 → 名字；未列出的取值 → 底层整数 ----
+  // EFMT_DERIVE_SHOW_TYPE=1（默认）时像结构体一样带类型名前缀：Rust #[derive(Debug)] 风格
+  CHECK_TEXT(text("{}", state::idle), "state::idle");
+  CHECK_TEXT(text("{}", state::busy), "state::busy");
+  CHECK_TEXT(text("{}", state::fault), "state::fault");
+  CHECK_TEXT(text("{}", state::down), "state::down");
+  CHECK_TEXT(text("{}", static_cast<state>(99)), "state::99");
+  CHECK_TEXT(text("{}", static_cast<state>(-2)), "state::down");
+  CHECK_TEXT(text("{:>8}", state::busy), "state::    busy");   // 前缀不进对齐，对齐只作用于名字
+  CHECK_TEXT(text("{}", code::ok), "code::ok");
+  CHECK_TEXT(text("{}", code::warn), "code::warn");
+  CHECK_TEXT(text("{}", code::fail), "code::fail");
+  CHECK_TEXT(text("{}", static_cast<code>(77)), "code::77");
 
   // ---- 和其它类型混用、可重复使用 ----
   CHECK_TEXT(text("imu={} state={} n={}", imu{1.0f, 2.0f, 3.0f}, state::fault, 42),
-             "imu={ ax = 1, ay = 2, az = 3 } state=fault n=42");
+             "imu=imu { ax = 1, ay = 2, az = 3 } state=state::fault n=42");
 
   // ---- 走 print 系列 ----
   {
@@ -268,7 +269,7 @@ int main() {
     const size_t used = get_buffer_output_pos();
     sink[used] = '\0';
     ++g_checks;
-    if (std::strstr(sink, "{ only = 9 }") == nullptr) {
+    if (std::strstr(sink, "one_field { only = 9 }") == nullptr) {
       ++g_failures;
       std::printf("FAIL println_info -> [%s]\n", sink);
     }

@@ -173,10 +173,10 @@ int main() {
 
   // E_FMT_DERIVE：结构体 + 枚举
   e_fmt::format_to(buf, sizeof(buf), "{}", imu3{1.5f, 2.5f, 3.5f});
-  check(streq(buf, "{ ax = 1.5, ay = 2.5, az = 3.5 }"), "derive struct");
+  check(streq(buf, "imu3 { ax = 1.5, ay = 2.5, az = 3.5 }"), "derive struct");
 
   e_fmt::format_to(buf, sizeof(buf), "{}", state3::busy);
-  check(streq(buf, "busy"), "derive enum");
+  check(streq(buf, "state3::busy"), "derive enum");
 
   // 输出回调路径：set_output_handler + println 经 UART 真实外设
   e_fmt::set_output_handler(&uart_sink);

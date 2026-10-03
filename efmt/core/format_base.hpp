@@ -132,9 +132,10 @@ namespace e_fmt {
 // ---------------------------------------------------------------------------
 // 自定义类型推导（E_FMT_DERIVE / E_FMT_FIELDS，实现见 format_derive.hpp）
 // ---------------------------------------------------------------------------
-// 推导输出是否带类型名：{ ax = 1.5 }（默认，省 Flash）还是 imu { ax = 1.5 }
+// 推导输出是否带类型名：默认带（结构体 imu { ax = 1.5 }、枚举 state::busy，Rust Debug 风格）；
+// 关 0 退回 { ax = 1.5 } / busy：省 Flash（Cortex-M4 实测带类型名 +1.35 KB）
 #ifndef EFMT_DERIVE_SHOW_TYPE
-#define EFMT_DERIVE_SHOW_TYPE 0
+#define EFMT_DERIVE_SHOW_TYPE 1
 #endif
 
 // 自定义类型推导的多行样式（{:#}）开关：开着多 ~15 B 字符串字面量；

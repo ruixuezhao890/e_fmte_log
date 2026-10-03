@@ -101,7 +101,7 @@ cmake --build build
 
 在 CLion 的 **Settings → CMake → CMake options** 里加：
 
-- `-DEFMT_DERIVE_SHOW_TYPE=1` → 推导输出带类型名：`point { x = 3, y = 4 }`（默认不带，Cortex-M4 上省约 1.35 KB Flash）
+- `-DEFMT_DERIVE_SHOW_TYPE=1`（默认）→ 推导输出带类型名：`point { x = 3, y = 4 }`、枚举 `state::x`；想省 Flash 就 `-DEFMT_DERIVE_SHOW_TYPE=0` 看 `{ x = 3, y = 4 }`
 
 其它开关直接写在 `main.cpp` 顶部 `#define`（都能用 `-D` 覆盖，定义见 `efmt/core/format_base.hpp`）：
 

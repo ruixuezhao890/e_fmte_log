@@ -51,6 +51,7 @@ docs/README.md        文档索引：先看哪一份（新手从这里挑）
 docs/SANDBOX-命令台上手指南.md  沙盒命令台：10 分钟跑起来 / 敲起来 / 加自己的命令
 docs/EFMT-使用手册.md  完整手册（18 章）：格式化 / 日志 / 序列化 / 命令行 / 裁剪宏 / 体积实测
 docs/ECLI-*.md        ecli 的设计方案与和 clap 的差距清单
+docs/libs/            三个库的独立使用手册（ecli / eserde / matchit，示例驱动、代码有编译验证）
 tests/                零框架行为检查 + 浮点差分对拍 + 基准 + 编译期反例
 sandbox/              CLion 试玩工程（clone 即可编：CMake 自建 include 形状；ETL 靠 -DETL_ROOT= 或相邻目录）
                       打开即跑的手玩命令台，敲一条命令看一段输出（上手指南见 docs/SANDBOX-命令台上手指南.md）
@@ -151,8 +152,8 @@ int main() {
 ```cpp
 E_FMT_DERIVE(struct imu { float ax; float ay; float az; });     // 结构体：一行一个字段
 E_FMT_DERIVE_ENUM(enum class state { idle, busy = 5 });         // 枚举：整段声明
-println_info("{}", imu{1.5f, 2.5f, 3.5f});   // { ax = 1.5, ay = 2.5, az = 3.5 }
-println_info("{}", state::busy);            // busy
+println_info("{}", imu{1.5f, 2.5f, 3.5f});   // imu { ax = 1.5, ay = 2.5, az = 3.5 }
+println_info("{}", state::busy);            // state::busy
 
 // 字段标签 + 能力标签（v1.9）：efmt 只解析/登记，上层 eserde 按它生成序列化等代码
 E_FMT_DERIVE(struct person {

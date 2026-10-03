@@ -37,7 +37,7 @@ int main() {
     if (!visited.empty()) visited += ',';
     visited += std::string(name);
   });
-  const bool ok = visited == "age,name" && format("{}", s) == "{ age = 18, name = bob }";
+  const bool ok = visited == "age,name" && format("{}", s) == "sample { age = 18, name = bob }";
   std::printf("no-tags: visited=%s format=%s\n", visited.c_str(), format("{}", s).c_str());
   std::printf("%d checks, %d failures\n", 2, ok ? 0 : 1);
   return ok ? 0 : 1;

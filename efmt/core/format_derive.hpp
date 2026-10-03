@@ -1096,7 +1096,7 @@ private:
 
 // ---------------------------------------------------------------------------
 // 开关统一在 format_base.hpp：
-//   EFMT_DERIVE_SHOW_TYPE（默认 0）/ EFMT_DERIVE_MAX_FIELDS（16）/
+//   EFMT_DERIVE_SHOW_TYPE（默认 1：结构体 imu { ... }、枚举 state::x）/ EFMT_DERIVE_MAX_FIELDS（16）/
 //   EFMT_DERIVE_MAX_ARRAY_ITEMS（8）/ EFMT_DERIVE_STRICT（1）
 // ---------------------------------------------------------------------------
 static_assert(EFMT_DERIVE_MAX_FIELDS >= 1 && EFMT_DERIVE_MAX_FIELDS <= 32,
@@ -2123,7 +2123,22 @@ template <> struct derived_printer<16> {
   }
 };
 
-// 枚举：取值 → 名字；未列出的取值 → 底层整数
+// EFMT_DERIVE_SHOW_TYPE（推导输出带不带类型名）只在这里读一次 ——
+// 结构体族用 " "（imu { ax = 1 }），枚举用 "::"（state::busy），Rust #[derive(Debug)] 风格。
+// 前缀不参与 {:<}/{:>} 对齐，对齐只作用于取值名。
+template <typename T>
+void write_type_prefix(format_context &ctx, std::string_view separator) {
+  if constexpr (EFMT_DERIVE_SHOW_TYPE != 0) {
+    const std::string_view type = type_name<T>();
+    if (!type.empty()) {
+      ctx.write_str(type);
+      ctx.write_str(separator);
+    }
+  }
+}
+
+// 枚举：取值 → 名字；未列出的取值 → 底层整数。
+// 带不带类型名前缀由 write_type_prefix 一处决定（test::hex / state::busy）。
 template <typename T, typename Names>
 void derive_write_enum(const T &value, format_context &ctx, const format_specs &specs,
                        const Names &names) {
@@ -2135,10 +2150,12 @@ void derive_write_enum(const T &value, format_context &ctx, const format_specs &
   const long long key = as_unsigned ? static_cast<long long>(as_plain) : as_signed;
   for (std::size_t i = 0; i < names.count; ++i) {
     if (names.values[i] == key) {
+      write_type_prefix<T>(ctx, "::");
       ctx.write_aligned(names.items[i], specs);
       return;
     }
   }
+  write_type_prefix<T>(ctx, "::");
   integral_formatter::format_signed(ctx, specs, as_signed);
 }
 
@@ -2148,13 +2165,7 @@ void format_derived(const T &value, format_context &ctx, const format_specs &spe
   if constexpr (std::is_enum<T>::value) {
     derive_write_enum(value, ctx, specs, names);
   } else {
-    if constexpr (EFMT_DERIVE_SHOW_TYPE != 0) {
-      const std::string_view type = type_name<T>();
-      if (!type.empty()) {
-        ctx.write_str(type);
-        ctx.write_char(' ');
-      }
-    }
+    write_type_prefix<T>(ctx, " ");
     derived_printer<N>::run(value, ctx, &names, make_derive_style(specs));
   }
 }
@@ -2167,13 +2178,7 @@ void derive_write_positional(const T &value, format_context &ctx) {
                 "这个聚合体推导不出字段数（可能含数组成员、有基类或不是聚合体）。"
                 "请给它加 E_FMT_DERIVE(...)，或改用 E_FMT_FIELDS(...)");
   if constexpr (count > 0) {
-    if constexpr (EFMT_DERIVE_SHOW_TYPE != 0) {
-      const std::string_view type = type_name<T>();
-      if (!type.empty()) {
-        ctx.write_str(type);
-        ctx.write_char(' ');
-      }
-    }
+    write_type_prefix<T>(ctx, " ");
     derived_printer<count>::run(
         value, ctx, static_cast<const derived_names_t<count> *>(nullptr),
         derive_style{});
@@ -2258,13 +2263,7 @@ void format_via_field_names(format_context &ctx, const format_specs &specs,
   static constexpr names_type names = T::efmt_field_names();
   static_assert(names.valid,
                 "E_FMT_FIELDS(...) 里没写字段名，或字段数超过 EFMT_DERIVE_MAX_FIELDS");
-  if constexpr (EFMT_DERIVE_SHOW_TYPE != 0) {
-    const std::string_view type = type_name<T>();
-    if (!type.empty()) {
-      ctx.write_str(type);
-      ctx.write_char(' ');
-    }
-  }
+  write_type_prefix<T>(ctx, " ");
   derived_printer<names.count>::run(value, ctx, &names, make_derive_style(specs));
 }
 

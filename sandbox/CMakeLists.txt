@@ -131,6 +131,6 @@ else()
     target_compile_options(sandbox PRIVATE -Wall -Wextra)
 endif()
 
-# 想试输出风格：CLion → Settings → CMake → CMake options 加 -DEFMT_DERIVE_SHOW_TYPE=1
-set(EFMT_DERIVE_SHOW_TYPE 0 CACHE STRING "推导输出是否带类型名（1 = point { x = 3, y = 4 }）")
+# 想试省 Flash 那档输出：CLion → Settings → CMake → CMake options 加 -DEFMT_DERIVE_SHOW_TYPE=0
+set(EFMT_DERIVE_SHOW_TYPE 1 CACHE STRING "推导输出是否带类型名（1 = point { x = 3, y = 4 }，默认）")
 target_compile_definitions(sandbox PRIVATE EFMT_DERIVE_SHOW_TYPE=${EFMT_DERIVE_SHOW_TYPE})
