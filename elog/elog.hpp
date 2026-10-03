@@ -501,16 +501,23 @@ inline sink make_sink(sink::write_fn fn, void *user_data = nullptr) {
 
 inline sink make_efmt_sink(e_fmt::output_fn fn) { return sink::from_efmt_output(fn); }
 
-inline bool stdout_sink_write(const char *data, std::size_t size, void *) {
 #if EFMT_ENABLE_STDIO
+inline bool stdout_sink_write(const char *data, std::size_t size, void *) {
   e_fmt::stdout_output_handler(data, size);
-#else
-  return e_log::sink::from_efmt_output(e_fmt::get_output_handler()).write(data, size);
-#endif
   return true;
 }
+#endif
 
-inline sink stdout_sink() { return make_sink(&stdout_sink_write); }
+// 「stdout」通道：桌面宿主写真 stdout（不走全局 handler，不受 set_output_handler 影响）；
+// 嵌入式没有 stdio，取【创建时刻】的全局 handler 固化进 sink ——
+// 之后 set_output_handler 再换通道也不影响这条日志（不会悄悄漂移）。
+inline sink stdout_sink() {
+#if EFMT_ENABLE_STDIO
+  return make_sink(&stdout_sink_write);
+#else
+  return make_efmt_sink(e_fmt::get_output_handler());
+#endif
+}
 
 } // namespace e_log
 

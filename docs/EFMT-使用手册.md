@@ -438,8 +438,9 @@ E_FMT_DERIVE_ENUM(enum class state {         // 枚举：整段声明一起进�
   fault
 });
 
-println_info("{}", imu{1.5f, 2.5f, 3.5f});   // { ax = 1.5, ay = 2.5, az = 3.5 }
-println_info("{}", state::busy);             // busy
+println_info("{}", imu{1.5f, 2.5f, 3.5f});   // imu { ax = 1.5, ay = 2.5, az = 3.5 }
+println_info("{}", state::busy);             // state::busy
+// 默认带类型名（EFMT_DERIVE_SHOW_TYPE=1）；结构体 imu { ... }、枚举 state::x。关 0 退回 { ax = 1.5 } / busy，省 Flash
 ```
 
 **为什么枚举要单独一个宏**：预处理器只把圆括号当保护，**花括号不算** —— 枚举体的逗号是顶层
@@ -536,7 +537,7 @@ struct box {
 
 | 宏 | 默认 | 作用 |
 |----|------|------|
-| `EFMT_DERIVE_SHOW_TYPE` | 0 | 输出带不带类型名：`{ ax = 1.5 }`（默认，省 Flash）vs `imu { ax = 1.5 }`（开它 **+1.35 KB Flash**，Cortex-M4 实测） |
+| `EFMT_DERIVE_SHOW_TYPE` | 1 | 输出带不带类型名：`imu { ax = 1.5 }`、枚举 `state::busy`（默认开，Rust Debug 风格）；关 0 退回 `{ ax = 1.5 }` / `busy`（省 **1.35 KB Flash**，Cortex-M4 实测） |
 | `EFMT_DERIVE_MAX_FIELDS` | 16 | 单类型字段/取值上限 |
 | `EFMT_DERIVE_MAX_ARRAY_ITEMS` | 8 | 数组成员最多打几个元素，超出 `...` |
 | `EFMT_DERIVE_STRICT` | 1 | 成员没有格式化器 → 编译报错（Rust 行为）；设 0 退回 `obj@地址` |
@@ -911,8 +912,8 @@ void status_run(const status_args &a, reply out) {
 void wifi_set_run(const wifi_args &a, reply) { /* 干活 */ }
 
 constexpr command kCommands[] = {
-  {"status",   "show link status", command_of<status_args, status_run>()},
-  {"wifi set", "set ssid",         command_of<wifi_args, wifi_set_run>()},
+  {"status",   "show link status", command_of<status_args, status_run>(),   help_of<status_args>()},
+  {"wifi set", "set ssid",         command_of<wifi_args, wifi_set_run>(),   help_of<wifi_args>()},
 };
 ```
 
@@ -939,6 +940,12 @@ dispatch(kCommands, argc, argv, stdout_reply());                                
 | `reply_to_sink(elog 的 sink)` | 出口是 elog 的输出后端（`ecli/elog_reply.hpp`，回复仍原样）|
 | `reply{}` | 丢弃输出（命令照跑，用于只跑副作用的场合）|
 
+回复通道本体在 `ecli/reply.hpp`（`reply` 结构 + 上面全部适配器；`command.hpp` 不再定义）。
+帮助/报错要"**一行送走**"用 `ecli` 的 `send_usage<T> / send_help<T> / send_error<T> / send_version`
+（`ecli/cli.hpp`）——自持 `ECLI_REPLY_BUFFER` 栈缓冲、装不下如实标 `...(truncated)`、返回 snprintf
+语义的完整长度（`> ECLI_REPLY_BUFFER` 即截断）；宿主想拿 `std::string` 就用 `usage_string / help_string /
+error_string / version_string`（同一套 `send_*` 的薄封装）。细节见 [ECLI-使用手册 3.9](libs/ECLI-使用手册.md)。
+
 #### 命令名里的模式段（`:参数` / `*余下`，由 matchit 做匹配）
 
 命令名可以写**模式段**，捕获到的值会**按名字注入到参数结构体的同名字段**，
@@ -958,8 +965,8 @@ void wifi_set_run(const wifi_args &a, reply out);          // 不需要原始捕
 void log_run(const log_args &a, const params &p, reply out); // 想看捕获：`p.get("rest")` / `p.rest_at(0, k)`
 
 constexpr command kCmds[] = {
-  {"wifi set :ssid", "set ssid",   command_of<wifi_args, wifi_set_run>()},
-  {"log *rest",      "log lines",  command_of<log_args, log_run>()},
+  {"wifi set :ssid", "set ssid",   command_of<wifi_args, wifi_set_run>(),   help_of<wifi_args>()},
+  {"log *rest",      "log lines",  command_of<log_args, log_run>(),         help_of<log_args>()},
 };
 ```
 
@@ -990,6 +997,9 @@ constexpr command kCmds[] = {
 
 内置帮助：`help` / `-h` / `--help` / `?` 列命令表；`help wifi set` 或 `wifi set -h` 给出该命令的
 usage + 选项表（命令自己的 `help` 字段作为说明）。这四个词是保留的，**命令表里别用**。
+`help <命令>` 走命令表第四字段的 **`help_of<Args>()` 帮助 thunk**：不解析、不注入、
+**不执行处理函数**（就算参数类型真声明了 `-h` 选项也不会误解析）；旧代码缺第四字段时
+聚合初始化补 `nullptr`，自动退回借 `-h` 通道的旧路径（行为不变）。
 
 错误：未知命令 → `error::unknown_command`（回复里带命令表）；命令内部的选项 / 必填 / 取值错误
 由 5.10 那套 `write_error` 生成（带 `usage: <命令>`）。`dispatch` 把这些错误码**返回**给调用方，
@@ -1046,8 +1056,8 @@ include 这个头 = 同时需要 elog 与它依赖的 ETL。
 ## 6. 输出与打印
 
 > `println_*` 是无状态的快捷打印。**要分级、要过滤、要上线关日志**的日志直接用 elog
-> （[第 13 章](#13-与-elog-一起用)）；elog 的 `stdout_sink()` 走的就是这里的全局输出处理器，
-> 两条路可以输出到同一条通道。
+> （[第 13 章](#13-与-elog-一起用)）；elog 的 `stdout_sink()` 嵌入式下取的就是这里的全局
+> 输出处理器（**创建时固化**，之后换通道不漂移；桌面写真 stdout），两条路可以输出到同一条通道。
 
 ### 6.1 输出处理器：一个函数指针搞定
 
@@ -1091,17 +1101,22 @@ reset_buffer_output_pos();               // 清空重来（不清零内容）
 reset_output_handler();                  // 恢复默认输出
 ```
 
-> 缓冲区满了会**丢弃**多余字节（`pos` 不再增长），不会越界。
+> 缓冲区写满**不再静默丢**：剩余空间够写标记时，尾部会追加 `...(truncated)`（与 ecli 回复
+> 截断同一约定；`EFMT_ENABLE_TRUNCATION_MARK` 可关，见 7.2）。`pos` 封顶在 `size`，不会越界。
 
 ### 6.3 丢弃输出 / 临时改道
 
 ```cpp
 set_output_handler(null_output_handler);          // 全丢（发布版关日志）
 {
-    e_fmt::detail::output_handler_scope scope(my_sink);   // 作用域内改道，退出自动还原
+    output_handler_scope scope(my_sink);          // 作用域内改道，退出自动还原
     println_info("only here");
 }
 ```
+
+> **owner 约定**：全局输出处理器是进程级单例，**谁改谁负责恢复**。临时改道一律用
+> `output_handler_scope`（栈式，嵌套安全）—— 不要手工 `set_output_handler` 后忘了
+> `reset_output_handler`（外层若已有人设过，会被你冲掉）。
 
 ### 6.4 颜色与样式（宿主）
 
@@ -1134,7 +1149,7 @@ print_styled(with_color(color::yellow) | style::bold | style::underline, "styled
 |------|--------|
 | `format` / `format_to` / `formatted_size` | **可重入**，无共享可变状态，多线程/中断里都能用 |
 | `print` / `println` 系列 | 共享全局输出处理器，多线程同时打印需要自己加锁 |
-| `set_output_handler` | 建议初始化阶段设置一次，运行期不要再改 |
+| `set_output_handler` | 建议初始化阶段设置一次，运行期不要再改；临时改道用 `output_handler_scope` |
 
 中断里打日志的建议：中断只把数据丢进环形缓冲（用 `format_to` 格式化到局部数组，
 再 `ring_push_isr`），主循环负责真正发串口 —— 避免在 ISR 里做长时间阻塞的 UART 发送。
@@ -1177,6 +1192,7 @@ print_styled(with_color(color::yellow) | style::bold | style::underline, "styled
 | `EFMT_ENABLE_CONTAINER_FORMAT` | `HOSTED` | 0 | 容器/tuple/pair 格式化 | 关闭后打容器退化为 `obj@0x...`（聚合数组在 STRICT 下编译报错）；**elog 默认已开** |
 | `EFMT_MAX_FORMAT_ARGS` | 16 | 8 | 单次调用参数上限（每个约 24 B 栈） | 超出的调用编译报错 |
 | `EFMT_PRINT_BUFFER_SIZE` | 256 | 256 | `print/println` 栈缓冲 | 单行超长被截断 |
+| `EFMT_ENABLE_TRUNCATION_MARK` | 1 | 1 | 缓冲输出写满追加 `...(truncated)` 标记 | 截断回归静默丢弃（省 ~17 B ≈ 标记长度） |
 | `EFMT_STRING_BUFFER_SIZE` | 256 | — | `format()` 的一次性栈缓冲 | 超长会二次分配（只影响宿主） |
 | `EFMT_FLOAT_BIGNUM_LIMBS` | 48 | 48 | 浮点定点大整数容量（32 位 limb） | 精度上限下降 |
 | `EFMT_FLOAT_DIGIT_GROUPS` | 48 | 48 | 浮点一次能产生的数字组（每组 9 位） | 输出位数上限下降 |
@@ -1631,8 +1647,9 @@ E_FMT_FORMATTER_FN(Rgb, [](format_context& ctx, const format_specs&, const Rgb& 
 > 二次错误（v1.11 修）。
 
 **Q26：`E_FMT_DERIVE` 打出来没有类型名？**
-默认关（`EFMT_DERIVE_SHOW_TYPE=0`），输出 `{ ax = 1.5 }`，比带类型名省 **1.35 KB Flash**
-（Cortex-M4 实测）。想要 Rust 那种 `imu { ax = 1.5 }` 就设 `EFMT_DERIVE_SHOW_TYPE=1`。
+默认开（`EFMT_DERIVE_SHOW_TYPE=1`）：结构体 `imu { ax = 1.5 }`、枚举 `state::busy`
+（Rust Debug 风格）。要省 Flash 就设 `EFMT_DERIVE_SHOW_TYPE=0` 退回 `{ ax = 1.5 }` / `busy`
+（省 **1.35 KB Flash**，Cortex-M4 实测）。
 
 **Q26b：`E_FMT_DERIVE(struct X { int a, b; });` 报"第一个参数只能是【声明本身】"？**
 预处理器在展开前就按**顶层逗号**切参数，而花括号不保护逗号 —— `int a, b;` 会被切成两段。
@@ -1748,8 +1765,9 @@ ELOG_INFO("temp={:.1f}", t);      // 自动带上文件/行号/函数
   `ecli::reply_to_logger(*logger)`（复用日志那条通道，见 5.11 末尾的 `ecli/elog_reply.hpp`），
   原样字节，不受"单行 384 B"约束。
 
-两者可以**输出到同一条通道**：`e_log::stdout_sink()` 内部用的就是 efmt 的全局输出处理器
-（`get_output_handler()`），同一条串口上混用不打架。
+两者可以**输出到同一条通道**：`e_log::stdout_sink()` 桌面写真 stdout、嵌入式取创建时刻的
+全局输出处理器（`get_output_handler()`，之后 `set_output_handler` 再换也不影响这条日志），
+同一条串口上混用不打架。
 
 ### 13.2 从初始化到上线：完整用法
 
@@ -2018,13 +2036,13 @@ void       reset_output_handler();
 void       set_buffer_output(char* buf, size_t size);
 size_t     get_buffer_output_pos();
 void       reset_buffer_output_pos();
-void       buffer_output_handler(const char* data, size_t size);   // 手动当 sink 用
+void       buffer_output_handler(const char* data, size_t size);   // 手动当 sink 用（写满标 ...(truncated)）
 void       null_output_handler(const char* data, size_t size);     // 丢弃
 void       stdout_output_handler(const char* data, size_t size);   // 需 EFMT_ENABLE_STDIO
 void       stderr_output_handler(const char* data, size_t size);
 void       file_output_handler(FILE*, const char* data, size_t size);
 
-namespace detail { class output_handler_scope { ... }; }  // RAII 临时改道
+class      output_handler_scope { ... };  // 公开 RAII：临时改道，退出自动还原（见 6.3）
 ```
 
 ### 14.4 自定义类型与样式
@@ -2107,6 +2125,8 @@ GCC 驱动丢失 multilib 的 `-L`，会链到 A32（ARM）libgcc，Thumb 代码
 
 当前基线（全绿）：宿主 **149 项 × 2 标准**、浮点对拍 **24.6 万次比对 0 失败**、
 嵌入式配置 / 最小裁剪配置 / 五个编译期反例 / elog 集成（三种配置）/ 无流无 ANSI 配置 /
+**四份手册的示例各一条 pass**（`manual examples` = 本手册、`eserde` / `matchit` / `ecli manual examples`
+= [docs/libs/](libs/) 下那三份分册 —— 手册里的代码照抄不编译就是红的）/
 QEMU（Cortex-M4）20 项真 ARM 断言。
 
 ### 15.2 浮点对拍自己跑一遍（可选，想加大样本时）
@@ -2166,7 +2186,7 @@ g++ -std=c++17 -O2 -Itests/include -DEFMT_USE_LIBC_PRINTF=0 -DEFMT_FLOAT_CHECK_I
 | 宏 | 默认（宿主 / 嵌入式） | 影响 | 典型用法 |
 |----|---------------------|------|---------|
 | `EFMT_ENABLE_HOSTED` | 自动 | 总开关 | `-DEFMT_ENABLE_HOSTED=0` 强制嵌入式 |
-| `EFMT_DERIVE_SHOW_TYPE` | 0 | 推导输出是否带类型名 | 开它 +1.35 KB Flash（Cortex-M4） |
+| `EFMT_DERIVE_SHOW_TYPE` | 1 | 推导输出是否带类型名（结构体 `imu { ... }`、枚举 `state::x`） | 关 0 省 Flash（-1.35 KB，Cortex-M4） |
 | `EFMT_DERIVE_STYLE_MULTILINE` | 1 | `{:#}` 多行缩进是否编进去 | 关它省 ~15 B 字符串，`{:#}` 退化为单行 |
 | `EFMT_DERIVE_MAX_FIELDS` | 16 | 单类型字段/取值上限 | 更大结构体时调大 |
 | `EFMT_DERIVE_MAX_ARRAY_ITEMS` | 8 | 数组成员最多打几个 | 缓冲区想全打就调大 |

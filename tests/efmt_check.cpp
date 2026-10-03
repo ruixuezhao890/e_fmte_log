@@ -403,6 +403,24 @@ static void test_print_api() {
   println_info("{}", big);
   CHECK_EQ(std::string(long_sink).find("zzz") != std::string::npos, true);
 
+  // C4：output_handler_scope 栈式改道 —— 作用域内改道、退出自动还原
+  reset_buffer_output_pos();
+  {
+    output_handler_scope scope(null_output_handler);
+    print_info("{}", 1);
+    CHECK_EQ(get_buffer_output_pos(), 0);  // 改道期间不写 buffer
+  }
+  print_info("{}", 1);                     // 退出后还原回 buffer handler
+  CHECK_EQ(get_buffer_output_pos() > 0, true);
+
+  // C4：缓冲写满不再静默丢 —— 追加 ...(truncated) 标记（预留区方案）
+  char tiny_sink[64];
+  set_buffer_output(tiny_sink, sizeof(tiny_sink));
+  reset_buffer_output_pos();
+  const std::string big2(200, 'q');
+  println_info("{}", big2);
+  CHECK_EQ(std::string(tiny_sink).find("...(truncated)") != std::string::npos, true);
+
   reset_output_handler();
   reset_buffer_output_pos();
 }

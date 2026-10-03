@@ -146,19 +146,20 @@ int main() {
   EXPECT_TRUE(formatted_size("id={} name={}", 42, "abc") == 14);
 
   // 3.4 / 6.2 print 系列 + 缓冲区输出
+  // C4：临时改道用 output_handler_scope —— 作用域内换到 uart_sink，退出自动还原
   char sink[256];
   set_buffer_output(sink, sizeof(sink));
-  set_output_handler(uart_sink);
-  println_info("System boot");
-  println_info("Firmware {} build {}", "1.4.0", 20260322);
-  println_warning("battery {}%", 18);
-  println_error("sensor 0x{:02X} timeout after {} ms", 0x1A, 250);
-  println_info("temp={:.1f}C hum={:.1f}%", 25.5f, 60.0f);
+  {
+    output_handler_scope to_uart(uart_sink);
+    println_info("System boot");
+    println_info("Firmware {} build {}", "1.4.0", 20260322);
+    println_warning("battery {}%", 18);
+    println_error("sensor 0x{:02X} timeout after {} ms", 0x1A, 250);
+    println_info("temp={:.1f}C hum={:.1f}%", 25.5f, 60.0f);
+  }  // 退出作用域：自动还原成进入前的 handler（不再手工 set/reset 互相覆盖）
   EXPECT_EQ(std::string(g_uart),
             "System boot\nFirmware 1.4.0 build 20260322\nbattery 18%\n"
             "sensor 0x1A timeout after 250 ms\ntemp=25.5C hum=60.0%\n");
-  set_buffer_output(sink, sizeof(sink));  // 4.1 的字符串格式化仍走缓冲区
-  reset_output_handler();
 
   // 4.x 格式规范
   EXPECT_EQ(format("{:<10}", "text"), "text      ");

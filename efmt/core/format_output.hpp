@@ -25,6 +25,12 @@ namespace e_fmt {
 // On desktop it can default to stdout; on embedded targets it can be routed to
 // UART, RTT, files or any user-supplied sink.
 
+// 缓冲输出写满后是否追加截断标记（与 ecli 回复的 ...(truncated) 同一约定；
+// 嵌入式裁剪体积可 -D 关掉）
+#ifndef EFMT_ENABLE_TRUNCATION_MARK
+#define EFMT_ENABLE_TRUNCATION_MARK 1
+#endif
+
 // ============================================================================
 // Output Handler Type Definition
 // ============================================================================
@@ -46,21 +52,6 @@ extern output_fn g_output_handler;
 
 // Internal write function that uses the current output handler
 void internal_write(const char* data, size_t size);
-
-// RAII helper to temporarily override output handler
-// Temporarily override the active sink inside a scope.
-class output_handler_scope {
-public:
-  explicit output_handler_scope(output_fn new_handler);
-  ~output_handler_scope();
-
-  // Non-copyable
-  output_handler_scope(const output_handler_scope&) = delete;
-  output_handler_scope& operator=(const output_handler_scope&) = delete;
-
-private:
-  output_fn prev_handler_;
-};
 
 } // namespace detail
 
@@ -84,6 +75,29 @@ inline output_fn get_output_handler() {
 inline void reset_output_handler() {
   detail::g_output_handler = nullptr;
 }
+
+// ============================================================================
+// Scoped Output Handler (owns the change, restores on exit)
+// ============================================================================
+
+/// 栈式临时改道：构造时保存当前 handler 并换成 new_handler，
+/// 析构时自动还原 —— 「谁改谁恢复」，嵌套使用不会互相冲掉。
+/// 全局 handler 是进程级单例：设置者负责恢复，临时改道一律用它。
+class output_handler_scope {
+public:
+  explicit output_handler_scope(output_fn new_handler)
+    : prev_handler_(detail::g_output_handler) {
+    detail::g_output_handler = new_handler;
+  }
+  ~output_handler_scope() { detail::g_output_handler = prev_handler_; }
+
+  // Non-copyable
+  output_handler_scope(const output_handler_scope&) = delete;
+  output_handler_scope& operator=(const output_handler_scope&) = delete;
+
+private:
+  output_fn prev_handler_;
+};
 
 // ============================================================================
 // Built-in Output Handlers (for common use cases)
@@ -126,14 +140,39 @@ namespace detail {
   extern buffer_output_ctx g_buffer_output_ctx;
 }
 
+/// 截断标记（与 ecli 回复截断同一约定：不静默丢数据，写满就亮明）
+namespace detail {
+  inline constexpr char kTruncationMark[] = "...(truncated)\n";
+  inline constexpr std::size_t kTruncationMarkSize = sizeof(kTruncationMark) - 1;
+}
+
 /// Buffer output handler function
 inline void buffer_output_handler(const char* data, size_t size) {
   auto& ctx = detail::g_buffer_output_ctx;
   if (ctx.buffer && ctx.pos < ctx.size) {
+#if EFMT_ENABLE_TRUNCATION_MARK
+    // 预留截断标记的空间：实际可写上限是 size - kMarkSize，
+    // 免得截断发生时没地方写标记（「不静默丢」）。buffer 太小（< 标记长）时
+    // 按旧行为直接写满，标记放弃。
+    const size_t usable = ctx.size > detail::kTruncationMarkSize
+                              ? ctx.size - detail::kTruncationMarkSize
+                              : 0;
+    const size_t cap = (usable > ctx.pos) ? usable - ctx.pos : 0;
+    const size_t write_size = (size <= cap) ? size : cap;
+    std::memcpy(ctx.buffer + ctx.pos, data, write_size);
+    ctx.pos += write_size;
+    if (write_size < size && usable > 0) {
+      // 没写全 = 截断：标记写进预留区，之后 pos 封顶，后续数据不写也不重复标记
+      std::memcpy(ctx.buffer + ctx.pos, detail::kTruncationMark,
+                  detail::kTruncationMarkSize);
+      ctx.pos += detail::kTruncationMarkSize;
+    }
+#else
     // Copy as much as fits; callers can inspect the final position separately.
     size_t write_size = (ctx.pos + size <= ctx.size) ? size : (ctx.size - ctx.pos);
     std::memcpy(ctx.buffer + ctx.pos, data, write_size);
     ctx.pos += write_size;
+#endif
   }
 }
 
@@ -243,16 +282,6 @@ inline void internal_write(const char* data, size_t size) {
     (void)size;
 #endif
   }
-}
-
-// RAII scope implementation
-inline output_handler_scope::output_handler_scope(output_fn new_handler)
-  : prev_handler_(g_output_handler) {
-  g_output_handler = new_handler;
-}
-
-inline output_handler_scope::~output_handler_scope() {
-  g_output_handler = prev_handler_;
 }
 
 } // namespace e_fmt::detail
