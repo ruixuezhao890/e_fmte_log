@@ -10,7 +10,7 @@ permissions:
   statuses: write
 
 env:
-  EFMT_ETL_INCLUDE: ${{ github.workspace }}/etl-3rd/include
+  EFMT_ETL_INCLUDE: ${{ github.workspace }}/etl-3rd/include/etl
 
 jobs:
   checks:
@@ -45,6 +45,7 @@ jobs:
           ec=$?
           set -e
           echo "== exit=$ec =="
+          echo "toklen=${#GITHUB_TOKEN} sha=${GITHUB_SHA:0:7}" >> /tmp/ci.log
           if [ $ec -ne 0 ]; then
             { echo "== tail start =="; tail -n 40 /tmp/ci.log; } | sed 's/%/%25/g; s/\r//g' | while IFS= read -r line; do echo "::error::$line"; done
             info=$(tail -n 10 /tmp/ci.log | tr '\n' '|' | sed 's/"/_/g' | head -c 120)
@@ -56,3 +57,11 @@ jobs:
               https://api.github.com/repos/${{ github.repository }}/issues -d "$pybody" > /dev/null
           fi
           exit $ec
+
+      - name: Upload failure log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-log
+          path: /tmp/ci.log
+          retention-days: 1
