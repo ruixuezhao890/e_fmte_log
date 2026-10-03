@@ -24,17 +24,30 @@ $etlLink = Join-Path $include 'middleware\etl'
 $out = Join-Path $PSScriptRoot 'out'
 New-Item -ItemType Directory -Force -Path $out | Out-Null
 
+# include 链接：Windows 用 junction，Linux/macOS（GitHub Actions）用符号链接。
+# 注意：删 junction 只能用不带 /s 的 rmdir（cmd /c rmdir "路径"），
+# rmdir /s 会跟着 junction 进到目标目录里，把目标目录的内容删掉。
+$isWin = $true
+if ($IsLinux -or $IsMacOS) { $isWin = $false }   # PS 5.1 无 $IsLinux，按 Windows 处理
+function Set-IncludeLink {
+    param([string]$Link, [string]$Target)
+    if ($isWin) {
+        if (Test-Path $Link) { cmd /c rmdir "$Link" | Out-Null }
+        New-Item -ItemType Junction -Path $Link -Target $Target | Out-Null
+    } else {
+        if (Test-Path $Link) { Remove-Item $Link -Force }
+        New-Item -ItemType SymbolicLink -Path $Link -Target $Target | Out-Null
+    }
+}
+
 $efmtLink = Join-Path $include 'middleware\efmt'
 if (-not (Test-Path (Join-Path $efmtLink 'core\format.hpp'))) {
-    New-Item -ItemType Junction -Path $efmtLink -Target (Join-Path $root 'efmt') | Out-Null
+    Set-IncludeLink $efmtLink (Join-Path $root 'efmt')
 }
 
 if ($EtlInclude) {
-    if (Test-Path $etlLink) { cmd /c rmdir "$etlLink" | Out-Null }
-    New-Item -ItemType Junction -Path $etlLink -Target $EtlInclude | Out-Null
+    Set-IncludeLink $etlLink $EtlInclude
 }
-# 注意：删 junction 只能用不带 /s 的 rmdir（cmd /c rmdir "路径"）。
-# rmdir /s 会跟着 junction 进到目标目录里，把目标目录的内容删掉。
 $hasEtl = Test-Path (Join-Path $etlLink 'expected.h')
 if (-not $hasEtl) {
     Write-Host "note: no ETL at $etlLink - skipping the elog integration steps (-EtlInclude to enable)"

@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+env:
+  EFMT_ETL_INCLUDE: ${{ github.workspace }}/etl-3rd/include
+
+jobs:
+  checks:
+    name: Full check suite (host + MCU footprint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout ETL (elog / ETL-type integration tests)
+        uses: actions/checkout@v4
+        with:
+          repository: ETLCPP/etl
+          path: etl-3rd
+
+      - name: Install ARM cross toolchain (footprint probe)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-arm-none-eabi
+
+      # 全量：host c++17/c++20 行为检查 + 浮点对拍 + E_FMT_DERIVE/eserde/ecli/elog 集成
+      # + 14 项编译期负例 + sandbox 冒烟 + -Size 交叉体积读数。
+      # 宿主自带 pwsh 7；xtensa-esp32-elf-g++ 未安装时体积探针自动跳过（不红）。
+      - name: Run full check suite
+        run: pwsh ./tests/run_check.ps1 -Size
