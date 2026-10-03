@@ -20,7 +20,7 @@ $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $PSScriptRoot
 $include = Join-Path $PSScriptRoot 'include'
-$etlLink = Join-Path $include 'middleware\etl'
+$etlLink = Join-Path $include 'middleware/etl'
 $out = Join-Path $PSScriptRoot 'out'
 New-Item -ItemType Directory -Force -Path $out | Out-Null
 
@@ -40,8 +40,8 @@ function Set-IncludeLink {
     }
 }
 
-$efmtLink = Join-Path $include 'middleware\efmt'
-if (-not (Test-Path (Join-Path $efmtLink 'core\format.hpp'))) {
+$efmtLink = Join-Path $include 'middleware/efmt'
+if (-not (Test-Path (Join-Path $efmtLink 'core/format.hpp'))) {
     Set-IncludeLink $efmtLink (Join-Path $root 'efmt')
 }
 
@@ -97,10 +97,10 @@ function Invoke-EfmtCompileFail {
 }
 
 # —— 前置条件：Prereq 字段用 '+' 组合（etl / elog / eserde / ecli / sandbox）——
-$elogHpp = Join-Path $root 'elog\elog.hpp'
-$serdeHpp = Join-Path $root 'eserde\serde.hpp'
-$cliHpp = Join-Path $root 'ecli\cli.hpp'
-$sandboxMain = Join-Path $root 'sandbox\main.cpp'
+$elogHpp = Join-Path $root 'elog/elog.hpp'
+$serdeHpp = Join-Path $root 'eserde/serde.hpp'
+$cliHpp = Join-Path $root 'ecli/cli.hpp'
+$sandboxMain = Join-Path $root 'sandbox/main.cpp'
 
 function Test-CheckPrereq {
     param([string]$Prereq)
