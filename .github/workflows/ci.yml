@@ -46,18 +46,12 @@ jobs:
           set -e
           echo "== exit=$ec =="
           if [ $ec -ne 0 ]; then
-            { echo "== tail start =="; tail -n 80 /tmp/ci.log; } | sed 's/%/%25/g; s/\r//g' | while IFS= read -r line; do echo "::error::$line"; done
-            info=$(tail -n 16 /tmp/ci.log | tr '\n' '|' | sed 's/"/_/g' | head -c 120)
+            { echo "== tail start =="; tail -n 40 /tmp/ci.log; } | sed 's/%/%25/g; s/\r//g' | while IFS= read -r line; do echo "::error::$line"; done
+            info=$(tail -n 10 /tmp/ci.log | tr '\n' '|' | sed 's/"/_/g' | head -c 120)
             curl -s -X POST -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" \
               https://api.github.com/repos/${{ github.repository }}/statuses/${{ github.sha }} \
               -d "{\"state\":\"failure\",\"context\":\"ci/tail\",\"description\":\"$info\"}"
-            pybody=$(python3 - <<'PYEOF'
-import json
-sha = "${{ github.sha }}"
-log = open('/tmp/ci.log','rb').read()[-3000:].decode('utf-8','replace')
-print(json.dumps({"title": "CI failure " + sha[:7], "body": "run_check tail:\n\n```\n" + log + "\n```"}))
-PYEOF
-)
+            pybody=$(python3 -c "import json; log=open('/tmp/ci.log','rb').read()[-3000:].decode('utf-8','replace'); print(json.dumps({'title':'CI failure ${GITHUB_SHA:0:7}','body':'run_check tail:\n\n' + log}))")
             curl -s -X POST -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" \
               https://api.github.com/repos/${{ github.repository }}/issues -d "$pybody" > /dev/null
           fi

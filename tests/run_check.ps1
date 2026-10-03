@@ -31,6 +31,10 @@ $isWin = $true
 if ($IsLinux -or $IsMacOS) { $isWin = $false }   # PS 5.1 无 $IsLinux，按 Windows 处理
 function Set-IncludeLink {
     param([string]$Link, [string]$Target)
+    $parent = Split-Path -Parent $Link
+    if ($parent -and -not (Test-Path $parent)) {
+        New-Item -ItemType Directory -Force -Path $parent | Out-Null
+    }
     if ($isWin) {
         if (Test-Path $Link) { cmd /c rmdir "$Link" | Out-Null }
         New-Item -ItemType Junction -Path $Link -Target $Target | Out-Null
