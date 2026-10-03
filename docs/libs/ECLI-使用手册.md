@@ -530,6 +530,10 @@ rx.clear();                   // 收完这一行，开始下一行（也可以�
 
 ### 3.7 命令表：`command` / `command_of` / `help_of` / `dispatch`
 
+> **适用场景：交互命令台 / REPL（串口、键盘、网络）**。写命令行工具（argv / 单条命令）
+> 的新代码优先选 3.7.1 的嵌套 struct 写法；3.7 的命令表留给"一张表多条命令 + 内置 help
+> 分发"的命令台。
+
 命令表是一个**零堆的 `constexpr` 数组**，每项四个字段：`{名字, 帮助, 处理函数 thunk, 帮助 thunk}`。
 **名字带空格就是子命令** —— 没有树、没有插值、没有 `new`。
 
@@ -626,7 +630,90 @@ commands:
 
 > 本节示例由 `tests/ecli_manual_examples.cpp` 的 `check_command_table()` / `check_builtin_help()` 编译验证。
 
+### 3.7.1 嵌套 struct 子命令（clap 风格）
+
+3.7 的「名字带空格」是扁平表；想对齐 clap 的话，新风格（1.0 起）直接照 clap derive 的写法：
+**子命令就是嵌套 struct**，命令名 = struct 名首字母转小写（`Add` → `add`；多词全小写原样，
+`AddFile` → `addfile`）。
+
+注册表：一个零字段 struct，里面逐条 `struct Name { 字段 }`，能力标签 `Subcommand`：
+
+```cpp
+E_FMT_DERIVE(struct Commands {
+  [[efmt::arg(help = "add a file")]] struct Add {
+    [[efmt::arg(short = "f", long = "file", required, help = "file name")]] etl::string<16> file;
+  };
+  [[efmt::arg(help = "delete a file")]] struct Del {
+    [[efmt::arg(short = "f", long = "file", required, help = "file name")]] etl::string<16> file;
+  };
+  [[efmt::arg(help = "find by tag")]] struct Find {
+    [[efmt::arg(short = "t", long = "tag", help = "tag")]] etl::string<16> tag;
+  };
+}, Subcommand, Debug);
+```
+
+挂进解析结构体：一个 `[[efmt::arg(command)]]` 字段，类型是 `std::variant`
+（**首备选 = 注册表本身**，兼当「没给子命令」的哨兵）：
+
+```cpp
+// 槽字段类型带逗号，进不了宏参数 —— 必须先起别名（见 5.4 字段类型名）
+using CmdArgs = std::variant<Commands, Commands::Add, Commands::Del, Commands::Find>;
+//                                ▲ 首备选必须写注册表本身 = 「没给子命令」哨兵
+
+E_FMT_DERIVE(struct args {
+  [[efmt::arg(short = "v", long = "verbose", help = "show details")]] bool verbose = false;
+  [[efmt::arg(command)]] CmdArgs cmd;   // 必须是变体；写注册表名 Commands 编译不过（取值取不到）
+}, Parser, Debug);
+
+args a{};
+parse("add -f x.txt", a);    // a.cmd 现在是 Commands::Add，.file == "x.txt"
+```
+
+> 槽字段为什么必须是变体：解析命中子命令时往 `cmd` 里放的是「某个子命令的实例」，
+> 注册表本身是零字段空 struct，装不下任何值。所以写 `Commands cmd;` 编译不过
+> （matchit / `std::get` 无匹配）—— `std::variant` 的其余备选才是真正装值的地方，
+> 首备选注册表只当哨兵。
+
+分发消费与 clap 的 match 同构——走仓库里已 vendor 的 matchit（`as<T>` 对 `std::variant`
+开箱即用）：
+
+```cpp
+matchit::match(a.cmd)(
+    pattern | matchit::as<Commands::Add> = [](auto const &x) { /* 用 x.file */ },
+    pattern | matchit::as<Commands::Del> = [](auto const &x) { /* … */ },
+    pattern | _ = [](auto const &) { /* 没给子命令 */ });
+```
+
+规则与限制：
+
+- **命令名**：struct 名首字母转小写；多词全小写原样拼接。改名就是改 struct 名。
+- **帮助文本**：写在嵌套 struct 头部的 `[[efmt::arg(help = "…")]]`；顶层 `help` 列出
+  命令 + 帮助文本。
+- **变体备选顺序必须与注册表声明顺序一致**（宏拿不到嵌套类型的 C++ 名，名字级校验做不到）；
+  数量对不上、字段对不上都是**编译期报错**。
+- **上限**：子命令总数默认 ≤ 16（`EFMT_DERIVE_MAX_FIELDS`，`-D` 可调，最大 32），
+  超出是编译期报错，绝不静默丢。
+- **子命令内暂不支持位置参数**（v1）：命令名之后只认命名选项（`-f x` / `--file=x`，
+  必填等约束照常）；裸 token（如 `add net.txt`）会报 `unknown_option`。
+  子命令同样不能再嵌套（命令名之后再有裸 token 一律按未知选项处理）。
+- 子命令字段的取值、必填、关系约束、计数开关与顶层同一套规则。
+- **与旧命令表 / 模式段的关系**：`command_of` 扁平表、`:param` 模式段、嵌套 struct
+  三种写法可混用（同一进程里各用各的）；模式段的 `:name` 语法在 struct 风格里没有
+  （命令名是推导出来的）。具体怎么选：
+
+| 场景 | 写法 | 理由 |
+|---|---|---|
+| 命令行工具（argv / 单条命令）| **嵌套 struct（本节）** | 与 clap derive 同构，帮助/必填/关系约束一次声明 |
+| 交互命令台 / REPL（串口、键盘、网络）| `command_of` 扁平表（3.7）| 一张表多条命令，内置 help 分发；嵌套 struct 是单实例解析 |
+| 命令名里直接带参数（`"net set :ssid"`）| `:param` 模式段（3.8）| 命令名就是参数捕获；struct 风格没有这个语法 |
+
+> 本节示例由 `tests/ecli_subcommand_check.cpp` 编译验证（解析层 + cli 集成 +
+> matchit 消费 + 未选哨兵）。
+
 ### 3.8 命令名里的模式段：`:参数` / `*余下`
+
+> **适用场景：命令名里直接带参数（`"net set :ssid"` 这种）**。新工具优先选 3.7.1；
+> 模式段是扁平表（3.7）的高级补充，嵌套 struct 风格没有这个语法。
 
 命令名可以写**模式段**，捕获到的值会**按名字注入到参数结构体的同名字段**：
 
@@ -860,12 +947,13 @@ static_assert(ECLI_MAX_CAPTURES == 8);
 | 样例（同一份参数类型：`bool` + `const char*` + `int` + `char[32]`）| .text | 相对基线 |
 |---|---|---|
 | 只留声明与 schema（不调用解析）| 396 B | — |
-| 调用一次 `parse`（词法 + 取值 + 匹配 + 关系约束）| 5200 B | +4.7 KB |
-| 再带上 `write_help` / `write_error` | 7168 B | +6.6 KB |
-| 命令表（2 条命令 + 一次 `dispatch`）| 10580 B | +10.2 KB |
-| 同上 + `-DECLI_ENABLE_PATTERN_COMMANDS=0` | 9924 B | +9.5 KB |
-| 1 条 `:param` 模式命令（含 matchit）| 7184 B | +6.8 KB |
-| 命令表 + 回复改走 elog 的 sink | 10624 B | ↑ 只多 **44 B** |
+| 调用一次 `parse`（词法 + 取值 + 匹配 + 关系约束）| 5248 B | +4.7 KB |
+| 再带上 `write_help` / `write_error` | 7216 B | +6.7 KB |
+| 命令表（2 条命令 + 一次 `dispatch`）| 10780 B | +10.1 KB |
+| 同上 + `-DECLI_ENABLE_PATTERN_COMMANDS=0` | 10124 B | +9.5 KB |
+| 1 条 `:param` 模式命令（含 matchit）| 7316 B | +6.8 KB |
+| 命令表 + 回复改走 elog 的 sink | 10844 B | ↑ 只多 **64 B** |
+| **嵌套 struct 子命令**（2 条 + variant 槽 + 1 次分发，见 3.7.1）| 6976 B | +6.4 KB |
 
 几条读这份表的经验（细节见 8.2c）：
 
@@ -875,6 +963,8 @@ static_assert(ECLI_MAX_CAPTURES == 8);
 - 命令表框架（`dispatch` + 回复通道 + 命令列表）约 1.4 KB；剩下的是每条命令一份自包含 thunk。
 - 参数结构体里**没有浮点字段就不会实例化浮点取值路径**。
 - 不带 `ecli/elog_reply.hpp` 就是一行代码都不进固件；`reply_to_sink` 版只多 44 B、RAM 一分不涨。
+- **嵌套 struct 子命令比扁平命令表还省**（6976 B vs 10780 B）：没有 per-command
+  帮助/处理 thunk，命令再多只涨注册表数据（名字 + 帮助 + 字段表，编译期常量）。
 
 ---
 

@@ -26,7 +26,8 @@
 #include <elog/elog.hpp>            // 日志；顺带把 ETL 类型接进格式化（etl::string 当文本打）
 #include <eserde/json.hpp>
 #include <eserde/cbor.hpp>
-#include <ecli/command.hpp>         // 命令表：多命令 / 子命令 / 命令名模式段
+#include <ecli/command.hpp>         // 旧风格：命令表 / 子命令 / 命令名模式段
+#include <ecli/cli.hpp>             // 新风格：嵌套 struct 子命令（parse / help_string / error_string）
 #include <ecli/elog_reply.hpp>      // 答复的出口 = elog 的 sink（可选层）
 #include <matchit/matchit.h>        // 第三方（matchit/ 冻结副本）：这里直接用它的 match 表达式
 
@@ -115,6 +116,30 @@ E_FMT_DERIVE(struct args_args {     // 宿主工具那种完整选项集
   [[efmt::arg(long = "tag", help = "可重复：--tag a --tag b")]]   std::vector<std::string> tags;
   [[efmt::arg(pos = "1", help = "输入文件")]]                     etl::string<24> input;
 }, Cli);
+
+// ============================================================================
+// 2.5 新风格：嵌套 struct 子命令（和 clap derive 同构）
+//    注册表 = 零字段 struct，里面每条「嵌套 struct」就是一条子命令；
+//    命令名 = struct 名首字母转小写（Add → add）；帮助写在嵌套 struct 头部
+// ============================================================================
+E_FMT_DERIVE(struct Commands {
+  [[efmt::arg(help = "add a file")]] struct Add {
+    [[efmt::arg(short = "f", long = "file", required, help = "file name")]] etl::string<16> file;
+  };
+  [[efmt::arg(help = "delete a file")]] struct Del {
+    [[efmt::arg(short = "f", long = "file", required, help = "file name")]] etl::string<16> file;
+  };
+  [[efmt::arg(help = "find by tag")]] struct Find {
+    [[efmt::arg(short = "t", long = "tag", help = "tag")]] etl::string<16> tag;
+  };
+}, Subcommand, Debug);
+
+// 解析结构体：顶层选项 + 一个 command 槽；variant 首备选 = 注册表 =「没给子命令」
+using CmdArgs = std::variant<Commands, Commands::Add, Commands::Del, Commands::Find>;
+E_FMT_DERIVE(struct sub_args {
+  [[efmt::arg(short = "v", long = "verbose", help = "show details")]] bool verbose = false;
+  [[efmt::arg(command)]] CmdArgs cmd;  // 必须是变体（首备选=注册表=未选哨兵）；写注册表名 Commands 编译不过（get 无匹配）
+}, Parser, Debug);
 
 // ============================================================================
 // 3. 命令实现：格式化用 efmt（format_to），答复走 reply，日志走 ELOG_*
@@ -253,8 +278,36 @@ static void run_args(const args_args &a, ecli::reply out) {
          a.input.empty() ? "(没给)" : a.input.c_str(), a.tags);
 }
 
+// 新风格消费：cmd 是 variant，一臂一条子命令 —— matchit 的 match 和 clap 的 match 同构。
+// 注意分支 lambda 必须可【无参】调用（matchit 的约束）；字段在分支内用 std::get
+// 取 —— 能走到这个分支，variant 里就是这个类型。别用 Id<T> 接捕获值（会悬垂，
+// 见 matchit/README.md 的坑 1）
+static void run_sub(const sub_args &a, ecli::reply out) {
+  using namespace matchit;
+  const int hit = match(a.cmd)(
+      pattern | as<Commands::Add>(_) = [&] {
+        replyf(out, "add: file = {}\n", std::get<Commands::Add>(a.cmd).file);
+        return 1;
+      },
+      pattern | as<Commands::Del>(_) = [&] {
+        replyf(out, "del: file = {}\n", std::get<Commands::Del>(a.cmd).file);
+        return 2;
+      },
+      pattern | as<Commands::Find>(_) = [&] {
+        replyf(out, "find: tag = {}\n", std::get<Commands::Find>(a.cmd).tag);
+        return 3;
+      },
+      pattern | _ = [&] {
+        out.put_lit("（没给子命令）\n");
+        return 0;
+      });
+  (void)hit;
+}
+
 // ============================================================================
-// 4. 命令表：名字带空格就是子命令
+// 4. 命令表（旧风格）：名字带空格就是子命令
+//    注意：add / del / find 不进这张表 —— 它们由 2.5 的新风格 Parser 接管，
+//    分发见 run_line()：新风格优先，落空回落到这张表（两套并存）
 // ============================================================================
 static constexpr ecli::command kCommands[] = {
     {"num", "数字格式化", command_of<num_args, run_num>(), help_of<num_args>()},
@@ -271,6 +324,79 @@ static constexpr ecli::command kCommands[] = {
 };
 
 static constexpr const char *kVersion = "0.1.0-sandbox";
+
+// ============================================================================
+// 5. 分发：新风格优先，落空回落到旧命令表
+//    "help" 归旧表（列全部命令）；-h / --help / -V / --version 归新风格子命令层
+// ============================================================================
+static ecli::error run_line(std::string_view line, char *scratch, const ecli::reply out) {
+  if (line == "help" || line.compare(0, 5, "help ") == 0) {
+    const ecli::error e = ecli::dispatch(kCommands, line, scratch, ECLI_MAX_LINE, out);
+    if (e == ecli::error::help_requested || e == ecli::error::ok) {
+      out.put_lit("\nadd / del / find —— 新风格：嵌套 struct 子命令（add -h 看它自己的帮助）\n");
+    }
+    return e;
+  }
+  sub_args a{};
+  ecli::error_info info{};
+  const ecli::error es = ecli::parse(line, a, scratch, ECLI_MAX_LINE, &info);
+  if (es == ecli::error::ok) {
+    if (a.cmd.index() == 0) {
+      out.put_lit("（没给子命令，试试 add -f a.txt / del -f b.txt / find -t net）\n");
+      return ecli::error::ok;
+    }
+    run_sub(a, out);
+    return ecli::error::ok;
+  }
+  if (es == ecli::error::help_requested || es == ecli::error::version_requested) {
+    if (es == ecli::error::help_requested) {
+      out.put(ecli::help_string<sub_args>("sandbox", "嵌套 struct 子命令"));
+    } else {
+      out.put(ecli::version_string("sandbox", kVersion));
+    }
+    return es;
+  }
+  if (es != ecli::error::unknown_command) {
+    out.put(ecli::error_string<sub_args>("sandbox", es, info));
+    return es;
+  }
+  return ecli::dispatch(kCommands, line, scratch, ECLI_MAX_LINE, out);
+}
+
+// argv 那条路：同一套分流（token 直接指向 argv，零拷贝）
+static ecli::error run_line_argv(int argc, char **argv, const ecli::reply out) {
+  if (argc > 1 && std::string_view(argv[1]) == "help") {
+    const ecli::error e = ecli::dispatch(kCommands, argc, argv, out);
+    if (e == ecli::error::help_requested || e == ecli::error::ok) {
+      out.put_lit("\nadd / del / find —— 新风格：嵌套 struct 子命令（add -h 看它自己的帮助）\n");
+    }
+    return e;
+  }
+  sub_args a{};
+  ecli::error_info info{};
+  const ecli::error es = ecli::parse(argc, argv, a, &info);
+  if (es == ecli::error::ok) {
+    if (a.cmd.index() == 0) {
+      out.put_lit("（没给子命令，试试 add -f a.txt / del -f b.txt / find -t net）\n");
+      return ecli::error::ok;
+    }
+    run_sub(a, out);
+    return ecli::error::ok;
+  }
+  if (es == ecli::error::help_requested || es == ecli::error::version_requested) {
+    if (es == ecli::error::help_requested) {
+      out.put(ecli::help_string<sub_args>("sandbox", "嵌套 struct 子命令"));
+    } else {
+      out.put(ecli::version_string("sandbox", kVersion));
+    }
+    return es;
+  }
+  if (es != ecli::error::unknown_command) {
+    out.put(ecli::error_string<sub_args>("sandbox", es, info));
+    return es;
+  }
+  return ecli::dispatch(kCommands, argc, argv, out);
+}
 
 // ============================================================================
 // 5. 命令台：一行一条命令，回车执行（不 include 就是零开销，这里就是全部实现）
@@ -305,7 +431,9 @@ static int run_console() {
               "  me             自定义类型的三种注册写法\n"
               "  json / cbor    同一个人，两种格式各走一圈\n"
               "  level 5        matchit 的分支（0 / 1..9 / 其它）\n"
-              "  net set mynet  两段式子命令（net 单独敲 = 概览，最长前缀优先）\n"
+              "  net set mynet  旧风格：两段式子命令（net 单独敲 = 概览，最长前缀优先）\n"
+              "  add -f a.txt   新风格：嵌套 struct 子命令（add / del / find）\n"
+              "  --verbose add -f a.txt   新风格：顶层选项 + 子命令（matchit 消费）\n"
               "  log warn       日志：换级别，看哪几行被过滤\n"
               "  echo --upper hi    开关 + 位置参数\n"
               "  args -v -o a.bin --level 7 in.txt    完整选项集（还能 --tag a --tag b）\n\n"
@@ -320,8 +448,8 @@ static int run_console() {
     const std::string_view line = source.line();
     if (line == "quit" || line == "exit") break;
 
-    const ecli::error e = ecli::dispatch(kCommands, line, scratch, sizeof(scratch), out);
-    if (e == ecli::error::version_requested) out.put(ecli::version_string("sandbox", kVersion));
+    const ecli::error e = run_line(line, scratch, out);   // 新风格优先，落空走旧表
+    (void)e;   // 命令台循环：每条命令的回复已经写进 out，返回值只给 run_once 用
     source.clear();
   }
   out.put_lit("\n");
@@ -332,8 +460,7 @@ static int run_console() {
 static int run_once(int argc, char **argv) {
   // 同上：argv 这条路也复用那条通道，没有第二次绑定
   const ecli::reply out = ecli::reply_to_default_logger();
-  const ecli::error e = ecli::dispatch(kCommands, argc, argv, out);
-  if (e == ecli::error::version_requested) out.put(ecli::version_string("sandbox", kVersion));
+  const ecli::error e = run_line_argv(argc, argv, out);
   // help / version 不是失败（和 clap 一样：打完帮助/版本退 0）
   return e == ecli::error::ok || e == ecli::error::help_requested ||
                  e == ecli::error::version_requested
@@ -349,6 +476,7 @@ static int run_smoke() {
       "cbor",   "level 0",  "level 5",  "level 99",
       "net", "net set mynet",
       "echo --upper hi", "args -v -o a.bin --level 7 --tag net in.txt",
+      "add -f a.txt", "del -f b.txt", "find -t net", "add -h",   // 新风格
       "help", "help args", "nope",          // nope = 未知命令，也要有回复而不是崩
   };
   char scratch[ECLI_MAX_LINE];
@@ -356,7 +484,7 @@ static int run_smoke() {
   int bad = 0;
   for (const char *line : kScript) {
     buffer_reply b{reply_buf, sizeof(reply_buf), 0};
-    const ecli::error e = ecli::dispatch(kCommands, line, scratch, sizeof(scratch), b.as_reply());
+    const ecli::error e = run_line(line, scratch, b.as_reply());    // 新风格优先，落空走旧表
     // unknown_command 是有意的（最后一条），help/version 也不是失败
     if (e != ecli::error::ok && e != ecli::error::help_requested &&
         e != ecli::error::unknown_command && e != ecli::error::version_requested) {

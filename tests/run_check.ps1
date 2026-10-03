@@ -256,7 +256,8 @@ if ($Size) {
         @{ Name = 'cli parse'; Source = 'ecli_size_probe.cpp'; Defines = @('-DEFMT_ENABLE_HOSTED=0', "-I$root") },
         @{ Name = 'cli parse + help/error'; Source = 'ecli_size_probe.cpp'; Defines = @('-DEFMT_ENABLE_HOSTED=0', "-I$root", '-DECLI_SIZE_PROBE_HELP=1') },
         @{ Name = 'cli command table (2 cmds)'; Source = 'ecli_size_probe.cpp'; Defines = @('-DEFMT_ENABLE_HOSTED=0', "-I$root", '-DECLI_SIZE_PROBE_TABLE=1') },
-        @{ Name = 'cli pattern cmd (matchit)'; Source = 'ecli_size_probe.cpp'; Defines = @('-DEFMT_ENABLE_HOSTED=0', "-I$root", '-DECLI_SIZE_PROBE_PATTERN=1') }
+        @{ Name = 'cli pattern cmd (matchit)'; Source = 'ecli_size_probe.cpp'; Defines = @('-DEFMT_ENABLE_HOSTED=0', "-I$root", '-DECLI_SIZE_PROBE_PATTERN=1') },
+        @{ Name = 'cli subcommand struct (new)'; Source = 'ecli_size_probe.cpp'; Defines = @('-DEFMT_ENABLE_HOSTED=0', "-I$root", '-DECLI_SIZE_PROBE_SUBCMD=1') }
     )
     foreach ($target in $targets) {
         $compiler = Get-Command $target.Cxx -ErrorAction SilentlyContinue

@@ -8,10 +8,15 @@
  *                     -DECLI_SIZE_PROBE_HELP=1     再带上 write_help / write_error（usage/帮助文本）
  *                     -DECLI_SIZE_PROBE_TABLE=1    改测命令表：2 条命令 + 一次分发
  *                     -DECLI_SIZE_PROBE_PATTERN=1  改测模式命令：1 条 ":param" 命令（含 matchit）
+ *                     -DECLI_SIZE_PROBE_SUBCMD=1   改测子命令 struct 化：注册表 + variant 槽 + 1 次分发
  ******************************************************************************
  */
 
 #include <middleware/efmt/core/format.hpp>
+#if defined(ECLI_SIZE_PROBE_SUBCMD)
+#include <middleware/etl/string.h>
+using e_fmt::Debug;
+#endif
 #include <ecli/cli.hpp>
 
 using namespace ecli;
@@ -23,13 +28,16 @@ E_FMT_DERIVE(struct cli_args {
   [[efmt::arg(pos = "1", help = "input file")]]                    char input[32];
 }, Cli);
 
-#if defined(ECLI_SIZE_PROBE_TABLE) || defined(ECLI_SIZE_PROBE_PATTERN)
+#if defined(ECLI_SIZE_PROBE_TABLE) || defined(ECLI_SIZE_PROBE_PATTERN) || defined(ECLI_SIZE_PROBE_SUBCMD)
 #include <ecli/command.hpp>
 
 static void uart_write(const char *data, std::size_t size) {
   (void)data;
   (void)size;
 }
+#endif
+#if defined(ECLI_SIZE_PROBE_ELOG)
+#include <ecli/elog_reply.hpp>
 #endif
 
 #if defined(ECLI_SIZE_PROBE_TABLE)
@@ -62,19 +70,49 @@ static constexpr ecli::command kPatCmds[] = {
 };
 #endif
 
+#if defined(ECLI_SIZE_PROBE_SUBCMD)
+// 子命令 struct 化：注册表（嵌套 struct 声明）+ variant 槽 + matchit 分发（新风格）
+E_FMT_DERIVE(struct Commands {
+  [[efmt::arg(help = "add a file")]] struct Add {
+    [[efmt::arg(short, long, help = "file path")]] etl::string<48> file;
+  };
+  [[efmt::arg(help = "delete a file")]] struct Del {
+    [[efmt::arg(short, long, help = "file path")]] etl::string<48> file;
+  };
+}, Subcommand, Debug);
+
+using CmdArgs = std::variant<Commands, Commands::Add, Commands::Del>;
+
+E_FMT_DERIVE(struct sub_args {
+  [[efmt::arg(command)]] CmdArgs cmd;
+}, Parser);
+#endif
+
 int main() {
 #if defined(ECLI_SIZE_PROBE_OFF)
   return 0;   // 基线：只剩声明与 schema（编译期数据，零运行时代码）
 #elif defined(ECLI_SIZE_PROBE_TABLE)
   char scratch[ECLI_MAX_LINE];
+#if defined(ECLI_SIZE_PROBE_ELOG)
+  const ecli::error e =
+      ecli::dispatch(kCmds, "wifi set -s net", scratch, sizeof(scratch), ecli::reply_to_default_logger());
+#else
   const ecli::error e =
       ecli::dispatch(kCmds, "wifi set -s net", scratch, sizeof(scratch), ecli::reply_to<uart_write>());
+#endif
   return e == ecli::error::ok ? 0 : 1;
 #elif defined(ECLI_SIZE_PROBE_PATTERN)
   char scratch[ECLI_MAX_LINE];
   const ecli::error e =
       ecli::dispatch(kPatCmds, "set 5", scratch, sizeof(scratch), ecli::reply_to<uart_write>());
   return e == ecli::error::ok ? 0 : 1;
+#elif defined(ECLI_SIZE_PROBE_SUBCMD)
+  sub_args a{};
+  char scratch[ECLI_MAX_LINE];
+  ecli::error_info info{};
+  const ecli::error e =
+      ecli::parse("add -f net.txt", a, scratch, sizeof(scratch), &info);
+  return (e == ecli::error::ok && a.cmd.index() == 1) ? 0 : 1;
 #else
   cli_args a{};
   char scratch[ECLI_MAX_LINE];

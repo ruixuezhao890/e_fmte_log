@@ -50,6 +50,7 @@
 #include <string_view>
 #include <type_traits>
 #include <utility>
+#include <variant>
 
 #if EFMT_ENABLE_DYNAMIC_STRING
 #include <string>
@@ -79,6 +80,13 @@ namespace ecli {
 // 写在 E_FMT_DERIVE(struct args { ... }, Cli) 的能力位上：没有它 = 编译期报错。
 // 与 eserde 的 Serialize / Deserialize 一个套路（efmt 只原样登记，含义在这一层定义）。
 struct Cli {};
+
+// 子命令 struct 化（对齐 clap）的两个能力标签：
+//   * Parser      —— 解析块（顶层 args），与 Cli 等价，都能进 parse
+//   * Subcommand  —— 子命令注册表：E_FMT_DERIVE(struct Commands { ... }, Subcommand)
+// 注册表里的每个嵌套 struct 声明就是一个子命令（命令名 = struct 名小写：Add → add）。
+struct Parser {};
+struct Subcommand {};
 
 // ---------------------------------------------------------------------------
 // 错误码（不抛异常；与 json / cbor 一样配 error_name，方便统一打印）
@@ -145,6 +153,7 @@ struct error_info {
   std::string_view token{};         // 出问题的 token（选项名或取值）
   std::size_t option_index = npos;  // 相关字段在 schema 里的下标；npos = 没有
   std::size_t other_index = npos;   // conflict / missing_dependency 里的"另一项"
+  std::size_t sub_index = npos;     // 非 npos：错误发生在第 sub_index 个子命令（option_index 指向子命令字段表）
   std::size_t index = 0;            // token 在命令行里的下标（0 起）
 };
 
@@ -511,10 +520,13 @@ constexpr option_view make_option() {
   constexpr std::string_view short_alias_text = tag_value<T>(I, "short_alias");
   constexpr std::string_view delim_text = tag_value<T>(I, "delim");
 
+  // 子命令槽（[[efmt::arg(command)]]）：不进选项表，分发在 run() 里单独走
+  constexpr bool is_sub_slot = ::eserde::has_tag<T>(I, "command");
+
   option_view v{};
   v.field = ::eserde::field_name<T>(I);
   v.help = tag_value<T>(I, "help");
-  v.skip = skipped;
+  v.skip = skipped || is_sub_slot;   // 子命令槽对选项表隐身：命中与否由 run() 分发
   v.required = ::eserde::has_tag<T>(I, "required");
   constexpr bool is_count = ::eserde::has_tag<T>(I, "count");
   constexpr bool is_trailing = ::eserde::has_tag<T>(I, "trailing");
@@ -526,39 +538,39 @@ constexpr option_view make_option() {
   v.takes_value = !is_bool_v<M> && !is_count;
   v.repeatable = is_repeatable_v<M>;
   v.delim = delim_ch;
-  if (skipped) return v;   // 标了 skip：不进命令行，也不做取值类型检查
+  if (skipped || is_sub_slot) return v;   // skip / command：不进命令行，也不做取值类型检查
 
   // 注意：static_assert 在实例化时就检查，拦不住上面那句运行时早返回 ——
-  // 所以标了 skip 的字段要显式放过（否则一个不支持类型的"非选项字段"会被误杀）。
-  static_assert(skipped || has_long || has_short || has_pos,
+  // 所以标了 skip / command 的字段要显式放过（否则一个不支持类型的"非选项字段"会被误杀）。
+  static_assert(skipped || is_sub_slot || has_long || has_short || has_pos,
                 "[[efmt::arg(...)]]：字段既没有 long/short 也没有 pos —— 它在命令行里没有身份。"
                 "不想让它进命令行就标 [[efmt::arg(skip)]]");
-  static_assert(skipped || !(has_pos && (has_long || has_short)),
+  static_assert(skipped || is_sub_slot || !(has_pos && (has_long || has_short)),
                 "[[efmt::arg(...)]]：pos 与 long/short 不能同时标（位置参数与命名选项二选一）");
-  static_assert(skipped || !(has_pos && is_bool_v<M>),
+  static_assert(skipped || is_sub_slot || !(has_pos && is_bool_v<M>),
                 "[[efmt::arg(...)]]：位置参数不能是 bool —— bool 是 --flag 语义，位置参数得能收一个取值");
-  static_assert(skipped || is_value_type_v<M> || is_repeatable_v<M>,
+  static_assert(skipped || is_sub_slot || is_value_type_v<M> || is_repeatable_v<M>,
                 "这个字段的类型不能做命令行取值：支持 bool / 整数 / 浮点 / 枚举 / 字符串 / "
                 "string_view / 字符指针 / 字符数组 / 可重复容器；不想让它进命令行就标 [[efmt::arg(skip)]]");
-  static_assert(skipped || short_alias.size() <= 1,
+  static_assert(skipped || is_sub_slot || short_alias.size() <= 1,
                 "[[efmt::arg(short = \"x\")]]：short 只能给一个字符（不给取值则用字段名首字母）");
   static_assert(!has_pos || pos_alias.empty() || parse_position(pos_alias) != 0,
                 "[[efmt::arg(pos = \"2\")]]：pos 的取值只能是 1 起的位置序号");
   // 第一批 / 第二批新增标签的写法校验
-  static_assert(skipped || relation_names_ok<T, I>(),
+  static_assert(skipped || is_sub_slot || relation_names_ok<T, I>(),
                 "needs / conflicts / unless 的取值必须是本类型里真实存在的字段名或选项名（写错就是这句）");
-  static_assert(skipped || !is_count || (std::is_integral<M>::value && !is_bool_v<M>),
+  static_assert(skipped || is_sub_slot || !is_count || (std::is_integral<M>::value && !is_bool_v<M>),
                 "count 只能标在整数成员上（-vvv 那种计数开关）");
-  static_assert(skipped || !(has_pos && is_count), "count 是命名开关，不能标在位置参数上");
-  static_assert(skipped || !is_trailing || (has_pos && is_repeatable_v<M>),
+  static_assert(skipped || is_sub_slot || !(has_pos && is_count), "count 是命名开关，不能标在位置参数上");
+  static_assert(skipped || is_sub_slot || !is_trailing || (has_pos && is_repeatable_v<M>),
                 "trailing 只能标在【可重复的位置参数（容器）】上：它把余下的 token 全收走");
-  static_assert(skipped || !(is_trailing && delim_ch != 0), "trailing 与 delim 别叠着标");
-  static_assert(skipped || delim_ch == 0 || is_repeatable_v<M>,
+  static_assert(skipped || is_sub_slot || !(is_trailing && delim_ch != 0), "trailing 与 delim 别叠着标");
+  static_assert(skipped || is_sub_slot || delim_ch == 0 || is_repeatable_v<M>,
                 "delim 只能标在可重复的容器成员上（把一个取值切成多项）");
-  static_assert(skipped || !is_hyphen || (!is_bool_v<M> && !is_count),
+  static_assert(skipped || is_sub_slot || !is_hyphen || (!is_bool_v<M> && !is_count),
                 "hyphen 只能标在收取值的选项上（允许取值以 - 开头）");
-  static_assert(skipped || short_alias_text.size() <= 1, "short_alias 只能给一个字符");
-  static_assert(skipped || delim_text.size() <= 1, "delim 只能给一个字符（例如 delim = \",\"）");
+  static_assert(skipped || is_sub_slot || short_alias_text.size() <= 1, "short_alias 只能给一个字符");
+  static_assert(skipped || is_sub_slot || delim_text.size() <= 1, "delim 只能给一个字符（例如 delim = \",\"）");
 
   if (has_long) v.long_name = long_alias.empty() ? v.field : long_alias;
   if (!alias_text.empty()) v.long_alias = alias_text;
@@ -840,7 +852,7 @@ error assign_member(T &obj, std::string_view text, action act) {
 // 普通取值路径：跳过 skip 字段（它不进命令行选项表）
 template <std::size_t I, typename T>
 error assign_field(T &obj, std::string_view text, action act) {
-  if constexpr (field_skipped<T, I>()) {
+  if constexpr (field_skipped<T, I>() || ::eserde::has_tag<T>(I, "command")) {
     (void)obj;
     (void)text;
     (void)act;
@@ -899,12 +911,686 @@ inline std::size_t first_bit(std::uint32_t bits) {
 }
 
 // ---------------------------------------------------------------------------
-// 主解析循环
+// 子命令 struct 化（对齐 clap）：[[efmt::arg(command)]] std::variant<R, A, B, ...>
+//   * R = 注册表类型（首备选，"没选任何子命令"的哨兵；命令名 / 数量 / 每命令 schema 都从它来）
+//   * 命令名 = 注册表里嵌套 struct 的名字小写（Add → add）
+//   * 分发：第一个非选项 token 命中命令名 → 整个余段按该子命令自己的 schema 解析
+// 注册表类型本身不用注册成 Cli / Parser —— 只要它被 E_FMT_DERIVE(..., Subcommand) 展开过
+// （eserde::registered），schema_holder 就能从 #decl 字符串里编译期解析出子命令表。
 // ---------------------------------------------------------------------------
+
+// 命令名比较：struct 名小写后逐字符比（add 与 ADD 都算命中）
+constexpr char ascii_lower(char c) {
+  return (c >= 'A' && c <= 'Z') ? static_cast<char>(c + 32) : c;
+}
+constexpr bool sub_name_matches(std::string_view tok, std::string_view name) {
+  if (tok.size() != name.size()) return false;
+  for (std::size_t i = 0; i < tok.size(); ++i) {
+    if (ascii_lower(tok[i]) != ascii_lower(name[i])) return false;
+  }
+  return true;
+}
+
+// 从子命令的 [[efmt::arg(help = "...", ...)]] 属性段里取出帮助文本（无 help 则空）
+constexpr std::string_view sub_help_of(std::string_view attrs) {
+  const std::size_t p = attrs.find("help");
+  if (p == npos) return {};
+  std::size_t q = attrs.find('=', p);
+  if (q == npos) return {};
+  q = attrs.find('"', q);
+  if (q == npos) return {};
+  const std::size_t r = attrs.find('"', q + 1);
+  if (r == npos) return {};
+  return attrs.substr(q + 1, r - q - 1);
+}
+
+// command 槽字段类型 → 注册表类型；不是 variant / 首备选没注册 → value = false
+template <typename M> struct command_variant_of {
+  static constexpr bool value = false;
+  using registry = void;
+};
+template <typename R, typename... Subs>
+struct command_variant_of<std::variant<R, Subs...>> {
+  static constexpr bool value = ::eserde::detail::registered<R>::value;   // 首备选必须是注册表
+  using registry = R;
+};
+
+// 子命令的 mini schema：从注册表 schema 的 sub(K).body（#decl 原文）编译期再解析一遍。
+// 字段数 / 标签 / 字段名全部 constexpr，不依赖 eserde 的 schema_holder（嵌套类型没有注册表）。
+template <typename M, std::size_t K>
+struct sub_schema {
+  using type = ::e_fmt::detail::derived_schema_t<EFMT_DERIVE_MAX_FIELDS>;
+  static constexpr type value =
+      ::e_fmt::detail::parse_derived_schema<EFMT_DERIVE_MAX_FIELDS>(
+          ::eserde::detail::schema_holder<typename command_variant_of<M>::registry>::value.sub(K).body);
+};
+
+// 第 K 个子命令的真实 C++ 类型：variant 的第 K+1 个备选（首备选是注册表）
+template <typename M, std::size_t K>
+using sub_type_t = std::variant_alternative_t<K + 1, M>;
+
+template <typename M, std::size_t K>
+constexpr std::size_t sub_field_count() {
+  return sub_schema<M, K>::value.count;
+}
+
+// mini schema 上的标签读取（与 eserde::has_tag / tag_value 同套路，查文本标签）
+template <typename M, std::size_t K>
+constexpr bool sub_has_tag(std::size_t index, std::string_view name) {
+  const auto list = sub_schema<M, K>::value.tags(index);
+  for (std::size_t k = 0; k < list.count; ++k) {
+    if (list.items[k].name == name) return true;
+  }
+  return false;
+}
+template <typename M, std::size_t K>
+constexpr std::string_view sub_tag_value(std::size_t index, std::string_view name) {
+  const auto list = sub_schema<M, K>::value.tags(index);
+  for (std::size_t k = 0; k < list.count; ++k) {
+    const auto t = list.items[k];
+    if (t.name == name && t.has_value) return t.value;
+  }
+  return std::string_view{};
+}
+template <typename M, std::size_t K, std::size_t I>
+constexpr bool sub_field_skipped() {
+  return sub_has_tag<M, K>(I, "skip");
+}
+
+// 子命令字段的 C++ 类型：聚合访问（aggregate_access 展开结构化绑定）直取
+template <typename M, std::size_t K, std::size_t I>
+using sub_member_t = std::remove_cv_t<std::remove_reference_t<
+    decltype(std::get<I>(::e_fmt::detail::aggregate_access<(sub_field_count<M, K>() > 0 ? sub_field_count<M, K>() : 1)>::tie(std::declval<sub_type_t<M, K> &>())))>>;
+
+// 子命令的 relations 校验：needs / conflicts / unless 引用的字段必须真实存在（mini schema 版）
+template <typename M, std::size_t K, std::size_t I>
+constexpr bool sub_relation_names_ok() {
+  const auto &ms = sub_schema<M, K>::value;
+  for (const char *tag : {"needs", "conflicts", "unless"}) {
+    const auto list = ms.tags(I);
+    for (std::size_t k = 0; k < list.count; ++k) {
+      const auto t = list.items[k];
+      if (t.name != tag || !t.has_value) continue;
+      std::string_view ref = t.value;
+      // 与顶层同规则：字段名 → long → alias 三态都认
+      if (ms.find(ref) != ::eserde::npos) continue;
+      bool found = false;
+      for (std::size_t j = 0; j < ms.count; ++j) {
+        if (sub_tag_value<M, K>(j, "long") == ref ||
+            sub_tag_value<M, K>(j, "alias") == ref) {
+          found = true;
+          break;
+        }
+      }
+      if (!found) return false;
+    }
+  }
+  return true;
+}
+
+// 引用名 → 字段下标（子命令版）：字段名 → long → alias 三态都认（对照顶层 resolve_field_ref）
+template <typename M, std::size_t K>
+constexpr std::size_t sub_resolve_field_ref(std::string_view name) {
+  const auto &ms = sub_schema<M, K>::value;
+  const std::size_t f = ms.find(name);
+  if (f != ::eserde::npos) return f;
+  for (std::size_t j = 0; j < ms.count; ++j) {
+    const std::string_view lng = sub_tag_value<M, K>(j, "long");
+    if (!lng.empty() && lng == name) return j;
+    const std::string_view al = sub_tag_value<M, K>(j, "alias");
+    if (!al.empty() && al == name) return j;
+  }
+  return ::eserde::npos;
+}
+
+// needs / conflicts / unless → 位掩码（子命令版）
+template <typename M, std::size_t K, std::size_t I>
+constexpr std::uint32_t sub_tag_field_bits(std::string_view tag) {
+  std::uint32_t bits = 0;
+  const auto list = sub_schema<M, K>::value.tags(I);
+  for (std::size_t k = 0; k < list.count; ++k) {
+    const auto t = list.items[k];
+    if (t.name != tag || !t.has_value) continue;
+    const std::size_t at = sub_resolve_field_ref<M, K>(t.value);
+    if (at != ::eserde::npos && at < 32) bits |= (1u << at);
+  }
+  return bits;
+}
+
+// 同组字段合成的位掩码（子命令版）：group = "g"（互斥）/ group_any = "g"（至少一个）
+template <typename M, std::size_t K, std::size_t I>
+constexpr std::uint32_t sub_group_bits(std::string_view tag) {
+  const std::string_view mine = sub_tag_value<M, K>(I, tag);
+  if (mine.empty()) return 0;
+  std::uint32_t bits = 0;
+  const std::size_t n = sub_field_count<M, K>();
+  for (std::size_t j = 0; j < n; ++j) {
+    if (j == I) continue;
+    if (sub_tag_value<M, K>(j, tag) == mine) bits |= (1u << j);
+  }
+  return bits;
+}
+// 子命令槽下标（npos = 没有 command 槽；一个 Parser 最多一个子命令槽）
+template <typename T>
+constexpr std::size_t sub_command_slot() {
+  return ::eserde::find_by_tag<T>("command");
+}
+
+// [[efmt::arg(...)]] → option_view（子命令版：查 mini schema，其余与顶层同一套校验）
+template <typename M, std::size_t K, std::size_t I>
+constexpr option_view sub_make_option() {
+  using S = sub_member_t<M, K, I>;   // 字段类型（不是子命令类型！）
+  constexpr bool skipped = sub_field_skipped<M, K, I>();
+  constexpr bool has_long = sub_has_tag<M, K>(I, "long");
+  constexpr bool has_short = sub_has_tag<M, K>(I, "short");
+  constexpr bool has_pos = sub_has_tag<M, K>(I, "pos");
+  constexpr std::string_view long_alias = sub_tag_value<M, K>(I, "long");
+  constexpr std::string_view short_alias = sub_tag_value<M, K>(I, "short");
+  constexpr std::string_view pos_alias = sub_tag_value<M, K>(I, "pos");
+  constexpr std::string_view alias_text = sub_tag_value<M, K>(I, "alias");
+  constexpr std::string_view short_alias_text = sub_tag_value<M, K>(I, "short_alias");
+  constexpr std::string_view delim_text = sub_tag_value<M, K>(I, "delim");
+
+  option_view v{};
+  v.field = sub_schema<M, K>::value.field(I).name;
+  v.help = sub_tag_value<M, K>(I, "help");
+  v.skip = skipped;
+  v.required = sub_has_tag<M, K>(I, "required");
+  constexpr bool is_count = sub_has_tag<M, K>(I, "count");
+  constexpr bool is_trailing = sub_has_tag<M, K>(I, "trailing");
+  constexpr bool is_hyphen = sub_has_tag<M, K>(I, "hyphen");
+  constexpr char delim_ch = delim_text.empty() ? '\0' : delim_text[0];
+  v.count = is_count;
+  v.trailing = is_trailing;
+  v.hyphen = is_hyphen;
+  v.takes_value = !is_bool_v<S> && !is_count;
+  v.repeatable = is_repeatable_v<S>;
+  v.delim = delim_ch;
+  if (skipped) return v;
+
+  static_assert(skipped || has_long || has_short || has_pos,
+                "[[efmt::arg(...)]]（子命令字段）：字段既没有 long/short 也没有 pos —— "
+                "它在命令行里没有身份。不想让它进命令行就标 [[efmt::arg(skip)]]");
+  static_assert(skipped || !(has_pos && (has_long || has_short)),
+                "[[efmt::arg(...)]]：pos 与 long/short 不能同时标（位置参数与命名选项二选一）");
+  static_assert(skipped || !(has_pos && is_bool_v<S>),
+                "[[efmt::arg(...)]]：位置参数不能是 bool —— bool 是 --flag 语义，位置参数得能收一个取值");
+  static_assert(skipped || is_value_type_v<S> || is_repeatable_v<S>,
+                "这个字段的类型不能做命令行取值：支持 bool / 整数 / 浮点 / 枚举 / 字符串 / "
+                "string_view / 字符指针 / 字符数组 / 可重复容器；不想让它进命令行就标 [[efmt::arg(skip)]]");
+  static_assert(skipped || short_alias.size() <= 1,
+                "[[efmt::arg(short = \"x\")]]：short 只能给一个字符（不给取值则用字段名首字母）");
+  static_assert(!has_pos || pos_alias.empty() || parse_position(pos_alias) != 0,
+                "[[efmt::arg(pos = \"2\")]]：pos 的取值只能是 1 起的位置序号");
+  static_assert(skipped || sub_relation_names_ok<M, K, I>(),
+                "needs / conflicts / unless 的取值必须是本类型里真实存在的字段名或选项名（写错就是这句）");
+  static_assert(skipped || !is_count || (std::is_integral<S>::value && !is_bool_v<S>),
+                "count 只能标在整数成员上（-vvv 那种计数开关）");
+  static_assert(skipped || !(has_pos && is_count), "count 是命名开关，不能标在位置参数上");
+  static_assert(skipped || !is_trailing || (has_pos && is_repeatable_v<S>),
+                "trailing 只能标在【可重复的位置参数（容器）】上：它把余下的 token 全收走");
+  static_assert(skipped || !(is_trailing && delim_ch != 0), "trailing 与 delim 别叠着标");
+  static_assert(skipped || delim_ch == 0 || is_repeatable_v<S>,
+                "delim 只能标在可重复的容器成员上（把一个取值切成多项）");
+  static_assert(skipped || !is_hyphen || (!is_bool_v<S> && !is_count),
+                "hyphen 只能标在收取值的选项上（允许取值以 - 开头）");
+  static_assert(skipped || short_alias_text.size() <= 1, "short_alias 只能给一个字符");
+  static_assert(skipped || delim_text.size() <= 1, "delim 只能给一个字符（例如 delim = \",\"）");
+
+  if (has_long) v.long_name = long_alias.empty() ? v.field : long_alias;
+  if (!alias_text.empty()) v.long_alias = alias_text;
+  if (has_short) {
+    v.short_name = short_alias.empty() ? v.field[0] : short_alias[0];
+  }
+  if (!short_alias_text.empty()) v.short_alias = short_alias_text[0];
+  if (has_pos) {
+    if (pos_alias.empty()) {
+      std::size_t k = 1;
+      for (std::size_t j = 0; j < I; ++j) {
+        if (sub_has_tag<M, K>(j, "pos")) ++k;
+      }
+      v.position = k;
+    } else {
+      v.position = parse_position(pos_alias);
+    }
+  }
+
+  v.requires_mask = sub_tag_field_bits<M, K, I>("needs");
+  v.conflicts_mask = sub_tag_field_bits<M, K, I>("conflicts") | sub_group_bits<M, K, I>("group");
+  v.unless_mask = sub_tag_field_bits<M, K, I>("unless") | sub_group_bits<M, K, I>("group_any");
+  return v;
+}
+
+// ---- 子命令表构造（与顶层 options_holder 同套路，schema 改用 mini schema）----
+template <typename M, std::size_t K, std::size_t... I>
+constexpr std::array<option_view, sizeof...(I)> sub_make_options(std::index_sequence<I...>) {
+  return {sub_make_option<M, K, I>()...};
+}
+
+template <typename M, std::size_t K, std::size_t... I>
+constexpr bool sub_names_ok(std::index_sequence<I...>) {
+  const std::array<option_view, sizeof...(I)> t = {sub_make_option<M, K, I>()...};
+  for (std::size_t a = 0; a < t.size(); ++a) {
+    if (t[a].skip) continue;
+    const std::string_view longs_a[2] = {t[a].long_name, t[a].long_alias};
+    const char shorts_a[2] = {t[a].short_name, t[a].short_alias};
+    for (std::size_t b = a + 1; b < t.size(); ++b) {
+      if (t[b].skip) continue;
+      const std::string_view longs_b[2] = {t[b].long_name, t[b].long_alias};
+      const char shorts_b[2] = {t[b].short_name, t[b].short_alias};
+      for (std::size_t x = 0; x < 2; ++x) {
+        if (longs_a[x].empty()) continue;
+        for (std::size_t y = 0; y < 2; ++y) {
+          if (longs_a[x] == longs_b[y]) return false;
+        }
+        for (std::size_t y = 0; y < 2; ++y) {
+          if (shorts_b[y] != 0 && longs_a[x].size() == 1 && longs_a[x][0] == shorts_b[y]) return false;
+        }
+      }
+      for (std::size_t x = 0; x < 2; ++x) {
+        if (shorts_a[x] == 0) continue;
+        for (std::size_t y = 0; y < 2; ++y) {
+          if (shorts_a[x] == shorts_b[y]) return false;
+        }
+      }
+    }
+  }
+  return true;
+}
+
+template <typename M, std::size_t K, std::size_t... I>
+constexpr bool sub_positions_ok(std::index_sequence<I...>) {
+  const std::array<option_view, sizeof...(I)> t = sub_make_options<M, K>(std::index_sequence<I...>{});
+  for (std::size_t a = 0; a < t.size(); ++a) {
+    if (t[a].skip || t[a].position == 0) continue;
+    for (std::size_t b = a + 1; b < t.size(); ++b) {
+      if (t[b].skip || t[b].position == 0) continue;
+      if (t[b].position == t[a].position) return false;
+    }
+    if (!t[a].repeatable) continue;
+    for (std::size_t b = 0; b < t.size(); ++b) {
+      if (b != a && !t[b].skip && t[b].position > t[a].position) return false;
+    }
+  }
+  return true;
+}
+
+template <typename M, std::size_t K> struct sub_options_holder {
+  using seq = std::make_index_sequence<sub_field_count<M, K>()>;
+  static constexpr std::size_t count = sub_field_count<M, K>();
+  static constexpr std::array<option_view, count> value = sub_make_options<M, K>(seq{});
+  static_assert(sub_positions_ok<M, K>(seq{}),
+                "位置参数序号有冲突（子命令）：序号必须唯一，且可重复的位置参数（容器）必须是最后一个");
+  static_assert(sub_names_ok<M, K>(seq{}),
+                "选项名撞车（子命令）：long / alias / short / short_alias 必须两两不同");
+};
+
+// 子命令 option_view 表的编译期数组：write_error 按 error_info.sub_index 运行时索引，
+// 报错字段名才能指向子命令自己的字段（而不是顶层的同下标字段）
+struct sub_table_entry {
+  std::size_t count = npos;
+  const option_view *data = nullptr;
+};
+template <typename T, std::size_t Sub>
+struct sub_tables_holder {
+  using F = member_t<T, Sub>;   // 槽字段 = std::variant<R, A, B, ...>
+  static constexpr std::size_t nsubs = std::variant_size<F>::value - 1;   // 子命令数（首备选是注册表）
+  template <std::size_t... Ks>
+  static constexpr std::array<sub_table_entry, sizeof...(Ks)> make(std::index_sequence<Ks...>) {
+    // 注意：sub_options_holder 第一个参数在现有语义里是 variant（它内部再用 registry 查 schema）
+    return std::array<sub_table_entry, sizeof...(Ks)>{
+        sub_table_entry{sub_options_holder<F, Ks>::count, sub_options_holder<F, Ks>::value.data()}...};
+  }
+  static constexpr std::array<sub_table_entry, nsubs> value = make(std::make_index_sequence<nsubs>{});
+  static constexpr sub_table_entry find(std::size_t k) { return k < nsubs ? value[k] : sub_table_entry{}; }
+};
+// 无 command 槽（Sub = npos，旧式无子命令的 Parser）：空表，find 恒返回空 ——
+// 必须独立偏特化，否则 member_t<T, npos> 字段越界直接编译失败
+template <typename T>
+struct sub_tables_holder<T, npos> {
+  static constexpr std::size_t nsubs = 0;
+  static constexpr sub_table_entry find(std::size_t) { return sub_table_entry{}; }
+};
+
+// ---- 子命令的字段写入：与 assign_member 同一套类型分派，字段访问走聚合 tie ----
+template <typename M, std::size_t K, std::size_t I>
+error sub_assign_member(sub_type_t<M, K> &obj, std::string_view text, action act) {
+  {
+    using F = sub_member_t<M, K, I>;
+    auto &slot = std::get<I>(::e_fmt::detail::aggregate_access<(sub_field_count<M, K>() > 0 ? sub_field_count<M, K>() : 1)>::tie(obj));
+    if constexpr (std::is_same<F, bool>::value) {
+      if (act == action::flag_on) {
+        slot = true;
+        return error::ok;
+      }
+      if (act == action::flag_off) {
+        slot = false;
+        return error::ok;
+      }
+      bool b = false;
+      if (!parse_bool(text, b)) return error::invalid_value;
+      slot = b;
+      return error::ok;
+    } else if constexpr (std::is_integral<F>::value) {
+      if (act == action::count) {   // count：每出现一次 ++（饱和，不绕回）
+        if (slot < std::numeric_limits<F>::max()) ++slot;
+        return error::ok;
+      }
+      unsigned long long mag = 0;
+      bool neg = false;
+      if (!parse_integer(text, mag, neg) || !integer_fits<F>(mag, neg)) return error::invalid_value;
+      slot = integer_value<F>(mag, neg);
+      return error::ok;
+    } else if constexpr (is_optional_like_v<F>) {
+      using E = optional_inner_t<F>;
+      E item{};
+      const error e = assign_element(item, text);
+      if (e != error::ok) return e;
+      slot = static_cast<E &&>(item);
+      return error::ok;
+    } else if constexpr (std::is_floating_point<F>::value) {
+      double d = 0.0;
+      if (!parse_float(text, d)) return error::invalid_value;
+      slot = static_cast<F>(d);
+      return error::ok;
+    } else if constexpr (::eserde::detail::is_registered_enum_v<F>) {
+      if (!parse_enum(text, slot)) return error::invalid_value;
+      return error::ok;
+    } else if constexpr (is_char_pointer<F>::value) {
+      slot = text.data();   // 零拷贝：指向 argv / scratch（与顶层同一寿命约定）
+      return error::ok;
+    } else if constexpr (is_char_array_v<F>) {
+      return assign_char_array(slot, text);
+    } else if constexpr (is_writable_string<F>::value) {
+      return assign_string(slot, text);
+    } else if constexpr (is_string_like_v<F>) {
+      if constexpr (std::is_constructible<F, const char *, std::size_t>::value) {
+        slot = F(text.data(), text.size());
+      } else {
+        slot = F(text);
+      }
+      return error::ok;
+    } else if constexpr (is_repeatable_v<F>) {
+      using E = std::remove_cv_t<std::remove_reference_t<decltype(*slot.begin())>>;
+      constexpr char kDelim = sub_options_holder<M, K>::value[I].delim;
+      if (kDelim != 0 && text.find(kDelim) != std::string_view::npos) {
+        std::size_t begin = 0;
+        while (true) {
+          const std::size_t at = text.find(kDelim, begin);
+          const std::size_t end = (at == std::string_view::npos) ? text.size() : at;
+          E item{};
+          const error e = assign_element(item, text.substr(begin, end - begin));
+          if (e != error::ok) return e;
+          if (!push_checked(slot, static_cast<E &&>(item))) return error::too_many_values;
+          if (at == std::string_view::npos) break;
+          begin = at + 1;
+        }
+        return error::ok;
+      }
+      E item{};
+      const error e = assign_element(item, text);
+      if (e != error::ok) return e;
+      if (!push_checked(slot, static_cast<E &&>(item))) return error::too_many_values;
+      return error::ok;
+    } else {
+      static_assert(sizeof(F) == 0,   // F = 字段类型；若写成 sizeof(S)（子命令类型）恒非零，断言永不触发
+                    "这个字段的类型不能做命令行取值（子命令）：见 sub_make_option 的同类报错");
+      return error::invalid_value;
+    }
+  }
+}
+
+template <typename M, std::size_t K, std::size_t I>
+error sub_assign_field(sub_type_t<M, K> &obj, std::string_view text, action act) {
+  if constexpr (sub_field_skipped<M, K, I>()) {
+    (void)obj;
+    (void)text;
+    (void)act;
+    return error::unknown_option;
+  } else {
+    return sub_assign_member<M, K, I>(obj, text, act);
+  }
+}
+
+template <typename M, std::size_t K, std::size_t I>
+error sub_assign_rec(sub_type_t<M, K> &obj, std::size_t index, std::string_view text, action act) {
+  if (index == I) return sub_assign_field<M, K, I>(obj, text, act);
+  if constexpr (I + 1 < sub_field_count<M, K>()) {
+    return sub_assign_rec<M, K, I + 1>(obj, index, text, act);
+  } else {
+    return error::unknown_option;
+  }
+}
+
+template <typename M, std::size_t K>
+error sub_assign_at(sub_type_t<M, K> &obj, std::size_t index, std::string_view text, action act) {
+  return sub_assign_rec<M, K, 0>(obj, index, text, act);
+}
+
+// ---- 子命令解析循环：与顶层 run() 同一套语义，表换成 sub_options_holder ----
+template <typename M, std::size_t K>
+error sub_run(const token_list &tokens, sub_type_t<M, K> &obj, error_info &info) {
+  constexpr std::size_t n = sub_options_holder<M, K>::count;
+  const option_view *opts = sub_options_holder<M, K>::value.data();
+  info.sub_index = K;   // 本函数里所有错误都发生在第 K 个子命令（write_error 据此查子表）
+
+  std::uint32_t seen = 0;
+  bool no_more_options = false;
+
+  for (std::size_t i = 0; i < tokens.count; ++i) {
+    const std::string_view tok = tokens.items[i];
+    info.index = i;
+    info.token = tok;
+    info.option_index = npos;
+    info.other_index = npos;
+
+    if (!no_more_options && tok == "--") {
+      no_more_options = true;
+      continue;
+    }
+
+    const bool is_long = !no_more_options && tok.size() > 2 && tok[0] == '-' && tok[1] == '-';
+    const bool is_short = !no_more_options && tok.size() > 1 && tok[0] == '-' && tok[1] != '-';
+
+    if (is_long) {
+      std::string_view name = tok.substr(2);
+      std::string_view value{};
+      bool has_value = false;
+      const std::size_t eq = name.find('=');
+      if (eq != std::string_view::npos) {
+        value = name.substr(eq + 1);
+        has_value = true;
+        name = name.substr(0, eq);
+      }
+
+      std::size_t idx = find_long(opts, n, name);
+      action act = action::flag_on;
+      if (idx == npos && name.size() > 3 && name.compare(0, 3, "no-") == 0) {
+        const std::size_t neg = find_long(opts, n, name.substr(3));
+        if (neg != npos && !opts[neg].takes_value && !opts[neg].count) {
+          idx = neg;
+          act = action::flag_off;
+        }
+      }
+      if (idx == npos) {
+#if ECLI_ENABLE_HELP
+        if (name == "help" && find_long(opts, n, "help") == npos) return error::help_requested;
+#endif
+        if (name == "version" && find_long(opts, n, "version") == npos) {
+          return error::version_requested;
+        }
+        return error::unknown_option;
+      }
+      info.option_index = idx;
+
+      if (opts[idx].count) {
+        const error e = sub_assign_at<M, K>(obj, idx, std::string_view{}, action::count);
+        if (e != error::ok) return e;
+      } else if (opts[idx].takes_value) {
+        if (!has_value) {
+          if (i + 1 >= tokens.count) {
+            info.token = tok;
+            return error::missing_value;
+          }
+          const std::string_view next = tokens.items[i + 1];
+          if (!opts[idx].hyphen && looks_like_option(next)) {
+            info.token = tok;
+            return error::missing_value;
+          }
+          ++i;
+          value = tokens.items[i];
+          info.index = i;
+        }
+        info.token = value;
+        const error e = sub_assign_at<M, K>(obj, idx, value, action::value);
+        if (e != error::ok) return e;
+      } else {
+        const error e = sub_assign_at<M, K>(obj, idx, value, has_value ? action::value : act);
+        if (e != error::ok) return e;
+      }
+      seen |= (1u << idx);
+      continue;
+    }
+
+    if (is_short) {
+      std::size_t k = 1;
+      while (k < tok.size()) {
+        const char c = tok[k];
+#if ECLI_ENABLE_HELP
+        if (c == 'h' && find_short(opts, n, 'h') == npos) return error::help_requested;
+#endif
+        if (c == 'V' && find_short(opts, n, 'V') == npos) return error::version_requested;
+        const std::size_t idx = find_short(opts, n, c);
+        if (idx == npos) {
+          info.token = tok;
+          return error::unknown_option;
+        }
+        info.option_index = idx;
+
+        if (opts[idx].count) {
+          const error e = sub_assign_at<M, K>(obj, idx, std::string_view{}, action::count);
+          if (e != error::ok) {
+            info.token = tok;
+            return e;
+          }
+          seen |= (1u << idx);
+          ++k;
+          continue;
+        }
+
+        if (opts[idx].takes_value) {
+          std::string_view rest = tok.substr(k + 1);
+          const bool had_eq = !rest.empty() && rest.front() == '=';
+          if (had_eq) rest = rest.substr(1);
+          if (rest.empty() && !had_eq) {
+            if (i + 1 >= tokens.count) {
+              info.token = tok;
+              return error::missing_value;
+            }
+            const std::string_view next = tokens.items[i + 1];
+            if (!opts[idx].hyphen && looks_like_option(next)) {
+              info.token = tok;
+              return error::missing_value;
+            }
+            ++i;
+            rest = tokens.items[i];
+            info.index = i;
+          }
+          info.token = rest;
+          const error e = sub_assign_at<M, K>(obj, idx, rest, action::value);
+          if (e != error::ok) return e;
+          seen |= (1u << idx);
+          break;
+        }
+
+        const error e = sub_assign_at<M, K>(obj, idx, std::string_view{}, action::flag_on);
+        if (e != error::ok) {
+          info.token = tok;
+          return e;
+        }
+        seen |= (1u << idx);
+        ++k;
+      }
+      continue;
+    }
+
+    // 子命令不能再嵌套（v1）：未知的非选项 token 一律报 unknown_option
+    return error::unknown_option;
+  }
+
+  // 收尾校验（与顶层同一套 seen 位图规则）
+  for (std::size_t k = 0; k < n; ++k) {
+    if (opts[k].skip) continue;
+    const std::uint32_t bit = 1u << k;
+    if ((seen & bit) == 0) {
+      const bool need = opts[k].required ||
+                        (opts[k].unless_mask != 0 && (seen & opts[k].unless_mask) == 0);
+      if (need) {
+        info.option_index = k;
+        info.token = std::string_view{};
+        return error::missing_required;
+      }
+      continue;
+    }
+    if ((opts[k].conflicts_mask & seen) != 0) {
+      info.option_index = k;
+      info.other_index = first_bit(opts[k].conflicts_mask & seen);
+      info.token = std::string_view{};
+      return error::conflict;
+    }
+    const std::uint32_t missing = opts[k].requires_mask & ~seen;
+    if (missing != 0) {
+      info.option_index = k;
+      info.other_index = first_bit(missing);
+      info.token = std::string_view{};
+      return error::missing_dependency;
+    }
+  }
+  return error::ok;
+}
+
+// ---- 分发：第一个非选项 token 逐个子命令名比较；命中 → 余段整体交给 sub_run ----
+template <typename T, std::size_t Slot, std::size_t K, std::size_t N>
+bool try_sub_dispatch_rec(member_t<T, Slot> &var, const token_list &tokens, std::size_t i,
+                          error_info &info, error &out) {
+  using M = member_t<T, Slot>;
+  using R = typename command_variant_of<M>::registry;
+  if constexpr (K < N) {
+    if (sub_name_matches(tokens.items[i], ::eserde::detail::schema_holder<R>::value.sub(K).name)) {
+      // 槽此刻还在 0 号（注册表/未选哨兵）：先 emplace 激活本次命令的备选再取引用
+      // （std::get<K + 1> 在错误激活态上会抛 bad_variant_access）
+      auto &sub = var.template emplace<K + 1>();
+      token_list rest{};
+      rest.count = tokens.count - i - 1;
+      for (std::size_t j = 0; j < rest.count; ++j) rest.items[j] = tokens.items[i + 1 + j];
+      out = sub_run<M, K>(rest, sub, info);
+      return true;
+    }
+    return try_sub_dispatch_rec<T, Slot, K + 1, N>(var, tokens, i, info, out);
+  }
+  return false;
+}
+
+template <typename T, std::size_t Slot>
+bool try_sub_dispatch(member_t<T, Slot> &var, const token_list &tokens, std::size_t i,
+                      error_info &info, error &out) {
+  constexpr std::size_t N = std::variant_size<member_t<T, Slot>>::value - 1;
+  return try_sub_dispatch_rec<T, Slot, 0, N>(var, tokens, i, info, out);
+}
+
 template <typename T>
 error run(const token_list &tokens, T &obj, error_info &info) {
   constexpr std::size_t n = options_holder<T>::count;
   const option_view *opts = options_holder<T>::value.data();
+  constexpr std::size_t sub_slot = sub_command_slot<T>();
+  if constexpr (sub_slot != npos) {
+    static_assert(command_variant_of<member_t<T, sub_slot>>::value,
+                  "[[efmt::arg(command)]]：槽字段必须是 std::variant<R, A, B, ...>，"
+                  "且首备选 R 必须是子命令注册表类型（用 E_FMT_DERIVE(..., Subcommand) 注册的 struct，"
+                  "注意子命令的个数要和 variant 的备选数一致）");
+  }
+
+  info.sub_index = npos;   // 顶层入口：清掉子命令标记（调用方可能复用 error_info）
 
   std::uint32_t seen = 0;
   bool no_more_options = false;
@@ -1047,17 +1733,29 @@ error run(const token_list &tokens, T &obj, error_info &info) {
       continue;
     }
 
-    // 位置参数
-    const std::size_t idx = find_position(opts, n, next_pos);
-    if (idx == npos) return error::too_many_args;
-    info.option_index = idx;
-    const error e = assign_at(obj, idx, tok, action::value);
-    if (e != error::ok) return e;
-    seen |= (1u << idx);
-    if (opts[idx].trailing) {
-      no_more_options = true;   // trailing：余下的 token 全归它（连 -x 也算值）
+    // 子命令：有 command 槽时，第一个非选项 token 不归选项表 —— 命中命令名整体分发
+    if constexpr (sub_slot != npos) {
+      error sub_err = error::ok;
+      if (try_sub_dispatch<T, sub_slot>(::eserde::field_at<sub_slot>(obj), tokens, i, info, sub_err)) {
+        if (sub_err == error::ok) {
+          seen |= (1u << sub_slot);   // 子命令本身也算"已给出"（不参与收尾校验即可）
+        }
+        return sub_err;
+      }
+      return error::unknown_command;   // 有子命令槽时，非选项 token 只能是子命令名
+    } else {
+      // 位置参数
+      const std::size_t idx = find_position(opts, n, next_pos);
+      if (idx == npos) return error::too_many_args;
+      info.option_index = idx;
+      const error e = assign_at(obj, idx, tok, action::value);
+      if (e != error::ok) return e;
+      seen |= (1u << idx);
+      if (opts[idx].trailing) {
+        no_more_options = true;   // trailing：余下的 token 全归它（连 -x 也算值）
+      }
+      if (!opts[idx].repeatable) ++next_pos;   // 可重复的那个把余下的位置参数全收走
     }
-    if (!opts[idx].repeatable) ++next_pos;   // 可重复的那个把余下的位置参数全收走
   }
 
   // 收尾校验，三件事共用 seen 位图：
@@ -1322,7 +2020,8 @@ template <std::size_t MaxLine = ECLI_MAX_LINE> class line_reader {
 // ---------------------------------------------------------------------------
 // 规格查询（帮助文本与自检用；全部 constexpr）
 // ---------------------------------------------------------------------------
-template <typename T> inline constexpr bool is_cli_args_v = ::eserde::has_cap_v<T, Cli>;
+template <typename T> inline constexpr bool is_cli_args_v =
+    ::eserde::has_cap_v<T, Cli> || ::eserde::has_cap_v<T, Parser>;
 
 template <typename T> constexpr std::size_t option_count() {
   return detail::options_holder<T>::count;
@@ -1341,7 +2040,7 @@ template <typename T> constexpr option_view option(std::size_t index) {
 template <typename T>
 error parse(const token_list &tokens, T &out, error_info *info = nullptr) {
   static_assert(is_cli_args_v<T>,
-                "这个类型不能做命令行参数：缺 Cli 能力标签。"
+                "这个类型不能做命令行参数：缺 Cli / Parser 能力标签。"
                 "写成 E_FMT_DERIVE(struct args { ... }, Cli) 就能解析了");
   error_info local{};
   if (tokens.overflow) {
@@ -1452,6 +2151,31 @@ std::size_t write_help(std::string_view app, std::string_view about, char *buf, 
     }
     out.put('\n');
   }
+  // 子命令列表（若声明了 [[efmt::arg(command)]] 槽）：名字小写 + 帮助文本
+  constexpr std::size_t sub_slot = detail::sub_command_slot<T>();
+  if constexpr (sub_slot != npos) {
+    using sub_reg = typename detail::command_variant_of<detail::member_t<T, sub_slot>>::registry;
+    const auto &subs = ::eserde::detail::schema_holder<sub_reg>::value;
+    if (subs.sub_count > 0) {
+      std::size_t sub_width = 0;
+      for (std::size_t i = 0; i < subs.sub_count; ++i) {
+        const std::size_t w = subs.sub(i).name.size();
+        if (w > sub_width) sub_width = w;
+      }
+      out.put_lit("\ncommands:\n");
+      for (std::size_t i = 0; i < subs.sub_count; ++i) {
+        const std::string_view nm = subs.sub(i).name;
+        out.put_lit("  ");
+        for (const char c : nm) out.put(detail::ascii_lower(c));
+        const std::string_view h = detail::sub_help_of(subs.sub(i).attrs_head);
+        if (!h.empty()) {
+          out.spaces(sub_width + 2 - nm.size());
+          out.put(h);
+        }
+        out.put('\n');
+      }
+    }
+  }
   out.put_lit("  -h, --help");
   out.spaces(width > 12 ? width - 12 + 2 : 2);
   out.put_lit("show this help\n");
@@ -1476,12 +2200,18 @@ std::size_t write_error(std::string_view app, error e, const error_info &info, c
   char other_buf[48];
   std::string_view label{};
   std::string_view other{};
-  if (info.option_index < n) {
-    label = detail::option_label(opts[info.option_index], label_buf, sizeof(label_buf));
-  }
-  if (info.other_index < n) {
-    other = detail::option_label(opts[info.other_index], other_buf, sizeof(other_buf));
-  }
+  // 字段名默认查顶层表；sub_index != npos 时错误发生在子命令里，查对应子表
+  const auto pick_label = [&](std::size_t sub, std::size_t idx, char *tmp, std::size_t cap,
+                              std::string_view &dst) {
+    if (sub != npos) {
+      const auto tab = detail::sub_tables_holder<T, detail::sub_command_slot<T>()>::find(sub);
+      if (idx < tab.count) dst = detail::option_label(tab.data[idx], tmp, cap);
+    } else if (idx < n) {
+      dst = detail::option_label(opts[idx], tmp, cap);
+    }
+  };
+  pick_label(info.sub_index, info.option_index, label_buf, sizeof(label_buf), label);
+  pick_label(info.sub_index, info.other_index, other_buf, sizeof(other_buf), other);
   detail::text_out out{buf, cap, 0};
   out.put_lit("error: ");
   switch (e) {

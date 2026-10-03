@@ -24,7 +24,7 @@
 | 重复选项 → 列表 | `ArgAction::Append` + `Vec` | 容器字段自动可重复 |
 | `--` 之后全是位置参数 | ✓ | ✓ |
 | 负数不当选项 | 需 `allow_negative_numbers` | 默认就认 |
-| 子命令 | 树、可嵌套 | 扁平表 + **最长前缀**（名字带空格即任意层级）|
+| 子命令 | 树、可嵌套 | 扁平表 + **最长前缀**（旧写法：名字带空格即任意层级）；**嵌套 struct + `std::variant` 槽 + matchit 消费**（新写法，1.0 起：与 clap derive 同构，见 3.7.1）|
 | 自定义输入源 | `get_matches_from(iter)` | 天生如此（token 表：argv / 串口一行 / 环形缓冲）|
 | 不退出、返回错误 | `try_get_matches` | 只返回错误码，从不 exit |
 | `-h` / `--help` | ✓（exit 0） | ✓（返回 `help_requested`）|
@@ -90,6 +90,7 @@
 1. **命令名模式段**：`"wifi set :ssid"` / `"log *rest"` 能从命令名里直接抽参数并注入同名字段
    （匹配交给 [matchit.cpp](https://github.com/BowenFu/matchit.cpp) 的 extractor）；
    clap 的子命令是静态树，命令名本身不承载参数。
+   （嵌套 struct 的子命令名是推导出来的，不走模式段；要模式段就用扁平表写法。）
 2. **一份命令表吃所有输入源**：argv、串口一行文本、蓝牙、键盘（clap 绑进程 argv，
    `get_matches_from` 只能喂字符串）。
 2. **零堆、零异常、无 panic/exit**；clap 会分配、会 `exit`。
@@ -109,6 +110,7 @@
 | `required` | 裸 | 必填 |
 | `help = "…"` | 带值 | 帮助文本 |
 | `skip` | 裸 | 不进命令行（内部字段 / 不支持的类型）|
+| `command` | 裸 | 子命令槽：字段类型是 `std::variant`（首备选 = 注册表，见 3.7.1）|
 | `count` | 裸 | 计数开关（整数字段，`-vvv`）|
 | `delim = ","` | 带值 | 容器取值按分隔符切分 |
 | `trailing` | 裸 | 可重复位置参数：出现后余下 token 全归它（含 `-x`）|
@@ -129,4 +131,6 @@
 - 反例：`tests/ecli_compile_fail_names.cpp`（选项名撞车）、
   `tests/ecli_compile_fail_relation.cpp`（关系标签引用不存在的字段）
 - 存量：`ecli_cli_check` 114 / 111、`ecli_command_check` 52 / 50、`ecli_cli_etl_check` 16
+- 子命令 struct 化：`tests/ecli_subcommand_check.cpp`（解析层 static_assert + cli 集成 +
+  matchit 消费 + 未选哨兵），体积读数见手册 3.10（6976 B，比扁平命令表更省）
 - 全量：`tests/run_check.ps1 -Size`（含上述全部步骤与体积读数）

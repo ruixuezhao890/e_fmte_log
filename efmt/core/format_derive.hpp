@@ -1105,6 +1105,18 @@ static_assert(EFMT_DERIVE_MAX_FIELDS >= 1 && EFMT_DERIVE_MAX_FIELDS <= 32,
 // ---------------------------------------------------------------------------
 // 解析结果
 // ---------------------------------------------------------------------------
+// 嵌套命令声明（clap 风格子命令）：struct Add { ... }; 的视图。
+// 与 field/枚举同源：只持 string_view，不进打印表，不用就不占 Flash。
+// 必须定义在 derived_names_t 之前（后者按 [N] 持有本表的数组）。
+struct sub_view_t {
+  std::string_view name{};        // 命令名（Add）
+  std::string_view attrs_head{};  // struct 前的 [[...]] 原文（help 标签在这里）
+  std::string_view attrs_tail{};
+  std::string_view body{};        // 内层声明体（不含外层花括号）
+  bool has_attrs = false;
+  bool valid = true;
+};
+
 // 名字表按实际条目数缩放（[N] 数组正好 N 条）：E_FMT_DERIVE / E_FMT_FIELDS 的
 // 静态 rodata 从固定的 ~400B（16 条 × string_view + value）降到 ~(16+8)·N+24B，
 // 典型 2~8 字段类型省 70%~80%。N 由调用方编译期确定：FIELDS 用宏参数个数，
@@ -1114,6 +1126,8 @@ struct derived_names_t {
   std::string_view items[N];
   long long values[N];   // 枚举取值（结构体不用，保留以共用一套打印器）
   std::size_t count = 0;
+  sub_view_t subs[N];    // 嵌套命令（子命令 struct 化）：与普通字段分通道
+  std::size_t sub_count = 0;
   // 这几个开关用位域打包：表按 N 缩放，多一个整字节的 bool 会把整张表顶到下一个 8 字节
   // 边界（实测每个类型的名字表 +8 B rodata）。位域保持成员写法不变，一个字节装下。
   bool is_enum : 1;
@@ -1167,11 +1181,17 @@ struct derived_schema_t {
   bool parsed = false;
   bool is_enum = false;
 
+  // 嵌套命令（子命令 struct 化）：与普通字段分通道，解析时一次拷入缓存
+  sub_view_t subs[MaxN]{};
+  std::size_t sub_count = 0;
+
   constexpr field_view_t field(std::size_t index) const;
   constexpr field_view_t enum_item(std::size_t index) const;
   constexpr field_view_t item(std::size_t index) const;      // 统一入口（按 is_enum 分派）
   constexpr std::size_t find(std::string_view name) const;   // 按名字反查（npos = 没有）
   constexpr std::size_t find_by_tag(std::string_view tag) const;  // 按标签反查
+  constexpr sub_view_t sub(std::size_t index) const;         // 嵌套命令（越界返回空视图）
+  constexpr std::size_t find_sub(std::string_view name) const;    // 按命令名反查
   constexpr tag_list_t<EFMT_DERIVE_MAX_TAGS> tags(std::size_t index) const;
 };
 
@@ -1242,6 +1262,52 @@ constexpr std::string_view function_pointer_name(std::string_view s) {
   while (i < s.size() && is_ident(s[i])) ++i;
   if (i == b) return {};
   return s.substr(b, i - b);
+}
+
+// 嵌套命令声明：语句以 struct / class 关键字开头、有名字、且本语句内含 '{'。
+// 返回命令名（Add）；不是嵌套声明返回空。判别 '}' 由调用方做（配对大括号）。
+// 注意必须抢在 '(' 分支之前判断：内层字段的属性 [[...]] 含 '('，
+// 不先识别就会被当成成员函数丢弃（这正是嵌套 struct 曾静默丢字段的原因）。
+constexpr std::string_view nested_decl_name(std::string_view stmt) {
+  for (const std::string_view kw : {"struct", "class"}) {
+    if (stmt.size() > kw.size() && stmt.substr(0, kw.size()) == kw &&
+        is_space(stmt[kw.size()])) {
+      std::size_t p = kw.size();
+      while (p < stmt.size() && is_space(stmt[p])) ++p;
+      const std::size_t b = p;
+      while (p < stmt.size() && is_ident(stmt[p])) ++p;
+      if (p > b && stmt.find('{', p) != std::string_view::npos) {
+        return stmt.substr(b, p - b);
+      }
+    }
+  }
+  return {};
+}
+
+// 嵌套命令体：struct Name { body } → body（不含外层花括号）。
+// 大括号配平失败或 '}' 后还有东西（匿名变量之类）置 ok = false，绝不猜。
+constexpr std::string_view nested_decl_body(std::string_view stmt, bool &ok) {
+  ok = false;
+  const std::size_t ob = stmt.find('{');
+  if (ob == std::string_view::npos) return {};
+  int inner = 1;
+  bool in_str = false;
+  std::size_t q = ob + 1;
+  for (; q < stmt.size(); ++q) {
+    const char c = stmt[q];
+    if (in_str) {
+      if (c == '\\') { ++q; continue; }
+      if (c == '"') in_str = false;
+      continue;
+    }
+    if (c == '"') { in_str = true; continue; }
+    if (c == '{') ++inner;
+    else if (c == '}') { if (--inner == 0) break; }
+  }
+  if (inner != 0) return {};                         // 大括号不配对
+  if (!trim(stmt.substr(q + 1)).empty()) return {};  // '}' 后还有声明 → 不支持
+  ok = true;
+  return stmt.substr(ob + 1, q - ob - 1);
 }
 
 constexpr long long parse_integer_literal(std::string_view s, bool &ok) {
@@ -1346,6 +1412,31 @@ constexpr attr_layout_t split_attributes(std::string_view stmt) {
   if (head_end > 0) { out.has_head = true; out.head = s.substr(0, head_end); }
   if (tail_begin < s.size()) { out.has_tail = true; out.tail = s.substr(tail_begin); }
   out.rest = s.substr(head_end, tail_begin - head_end);
+  return out;
+}
+
+// 嵌套命令声明语句的宽松属性摘取：只摘前导连续 [[...]] 段。
+// 内层 struct 体里的字段属性（[[efmt::arg(short, long, ...)]]）位于声明中间，
+// split_attributes 的"属性夹在声明中间"检查会误伤它 —— 对 struct/class 声明语句
+// 只有前导段属于该命令自身（help 等），内层段原样留给子命令的字段解析。
+constexpr attr_layout_t split_leading_attributes(std::string_view stmt) {
+  attr_layout_t out{};
+  const std::string_view s = trim(stmt);
+  out.rest = s;
+  if (s.find("[[") != 0) return out;   // 没有前导属性 → 原样返回
+  std::size_t end = 0;
+  std::size_t i = 0;
+  for (;;) {
+    const attr_span_t seg = attr_span_at(s, i);
+    if (!seg.found || seg.begin != i) break;
+    if (end > 0 && !trim(s.substr(end, seg.begin - end)).empty()) break;  // 段间有内容 → 停
+    end = seg.end;
+    i = seg.end;
+  }
+  if (end == 0) return out;
+  out.has_head = true;
+  out.head = s.substr(0, end);
+  out.rest = s.substr(end);
   return out;
 }
 
@@ -1471,10 +1562,18 @@ constexpr field_view_t struct_field_at(std::string_view body, std::size_t index)
     const std::string_view raw = trim(body.substr(stmt_begin, i - stmt_begin));
     stmt_begin = i + 1;
     if (raw.empty()) continue;
-    const attr_layout_t lay = split_attributes(raw);
-    if (!lay.ok) { out.valid = false; return out; }
+    attr_layout_t lay = split_attributes(raw);
+    if (!lay.ok) {
+      const attr_layout_t loose = split_leading_attributes(raw);
+      if (!loose.has_head || nested_decl_name(loose.rest).empty()) {
+        out.valid = false;
+        return out;
+      }
+      lay = loose;
+    }
     const std::string_view stmt = trim(lay.rest);
     if (stmt.empty() || is_skipped_statement(stmt)) continue;
+    if (!nested_decl_name(stmt).empty()) continue;   // 嵌套命令走 sub 通道，不算普通字段
 
     if (stmt.find('(') != std::string_view::npos) {              // 成员函数 / 函数指针
       const std::string_view fn = function_pointer_name(stmt);
@@ -1582,12 +1681,43 @@ constexpr derived_names_t<MaxN> parse_struct_body(std::string_view body) {
     stmt_begin = i + 1;
     if (raw.empty()) continue;
     // [[...]] 先摘掉：属性里可能有 '(' 和 ','，不摘会被当成成员函数/多声明符
-    const attr_layout_t lay = split_attributes(raw);
-    if (!lay.ok) { parsed_ok = false; continue; }
+    attr_layout_t lay = split_attributes(raw);
+    if (!lay.ok) {
+      // 嵌套命令声明宽容：内层字段属性位于 struct 体中间，不算"属性夹在声明
+      // 中间"；用只摘前导段的宽松切法再试，去掉前导属性后必须是 struct/class
+      // 声明才接受，其余照旧报错。
+      const attr_layout_t loose = split_leading_attributes(raw);
+      if (!loose.has_head || nested_decl_name(trim(loose.rest)).empty()) {
+        parsed_ok = false;
+        continue;
+      }
+      lay = loose;
+    }
     const std::string_view stmt = trim(lay.rest);
     if (stmt.empty()) continue;
     if (is_skipped_statement(stmt)) {
       continue;   // 静态成员 / 类型别名 / 访问修饰符：不是数据字段
+    }
+    // 嵌套命令声明：struct Name { ... };（子命令 struct 化）。
+    // 必须抢在 '(' 分支之前：内层字段的属性 [[...]] 含 '('，不先识别就会
+    // 被当成员函数丢弃。命令名/帮助属性/字段子表整体进 sub 通道。
+    const std::string_view sub_name = nested_decl_name(stmt);
+    if (!sub_name.empty()) {
+      bool sub_ok = false;
+      const std::string_view sub_body = nested_decl_body(stmt, sub_ok);
+      if (!sub_ok) { parsed_ok = false; continue; }
+      if (out.sub_count < MaxN) {
+        sub_view_t sub{};
+        sub.name = sub_name;
+        sub.body = sub_body;
+        sub.attrs_head = lay.head;
+        sub.attrs_tail = lay.tail;
+        sub.has_attrs = lay.has_head || lay.has_tail;
+        out.subs[out.sub_count++] = sub;
+      } else {
+        ok = false;   // 超过 EFMT_DERIVE_MAX_FIELDS：绝不明着丢命令
+      }
+      continue;
     }
     if (stmt.find('(') != std::string_view::npos) {
       const std::string_view fn = function_pointer_name(stmt);   // 函数指针成员要算字段
@@ -1614,7 +1744,7 @@ constexpr derived_names_t<MaxN> parse_struct_body(std::string_view body) {
     }
   }
   out.parsed = parsed_ok;
-  out.valid = parsed_ok && ok && out.count > 0;
+  out.valid = parsed_ok && ok && (out.count > 0 || out.sub_count > 0);
   return out;
 }
 
@@ -1709,7 +1839,17 @@ constexpr derived_schema_t<MaxN> parse_derived_schema(std::string_view text) {
   derived_schema_t<MaxN> out{};
   out.decl = text;
   const std::size_t open = text.find('{');
-  if (open == std::string_view::npos) return out;
+  if (open == std::string_view::npos) {
+    // 剥壳体（子命令的 mini schema：body 里没有 struct 外壳和花括号）：
+    // 直接按字段体解析，field()/tags() 会把整个 decl 当体内扫。
+    const derived_names_t<MaxN> naked = derive_detail::parse_struct_body<MaxN>(text);
+    out.count = naked.count;
+    out.parsed = naked.parsed;
+    out.valid = naked.valid;
+    out.sub_count = naked.sub_count;
+    for (std::size_t k = 0; k < naked.sub_count; ++k) out.subs[k] = naked.subs[k];
+    return out;
+  }
   const std::string_view head = derive_detail::trim(text.substr(0, open));
   out.is_enum = head.size() >= 5 && head.substr(0, 5) == "enum ";
 
@@ -1717,13 +1857,19 @@ constexpr derived_schema_t<MaxN> parse_derived_schema(std::string_view text) {
   out.count = names.count;
   out.parsed = names.parsed;
   out.valid = names.valid;
+  out.sub_count = names.sub_count;
+  for (std::size_t k = 0; k < names.sub_count; ++k) out.subs[k] = names.subs[k];
   return out;
 }
 
 template <std::size_t MaxN>
 constexpr field_view_t derived_schema_t<MaxN>::field(std::size_t index) const {
   const std::size_t open = decl.find('{');
-  if (open == std::string_view::npos || index >= count) { field_view_t bad{}; bad.valid = false; return bad; }
+  if (index >= count) { field_view_t bad{}; bad.valid = false; return bad; }
+  if (open == std::string_view::npos) {
+    // 剥壳体（子命令 mini schema）：整个声明文本就是字段体
+    return derive_detail::struct_field_at(decl, index);
+  }
   int depth = 0;
   std::size_t close = std::string_view::npos;
   for (std::size_t i = open; i < decl.size(); ++i) {
@@ -1768,6 +1914,22 @@ constexpr std::size_t derived_schema_t<MaxN>::find_by_tag(std::string_view tag) 
     for (std::size_t k = 0; k < list.count; ++k) {
       if (list.items[k].name == tag) return i;
     }
+  }
+  return static_cast<std::size_t>(-1);
+}
+
+template <std::size_t MaxN>
+constexpr sub_view_t derived_schema_t<MaxN>::sub(std::size_t index) const {
+  sub_view_t bad{};
+  bad.valid = false;
+  if (index >= sub_count) return bad;
+  return subs[index];
+}
+
+template <std::size_t MaxN>
+constexpr std::size_t derived_schema_t<MaxN>::find_sub(std::string_view name) const {
+  for (std::size_t i = 0; i < sub_count; ++i) {
+    if (subs[i].name == name) return i;
   }
   return static_cast<std::size_t>(-1);
 }
@@ -2159,11 +2321,45 @@ void derive_write_enum(const T &value, format_context &ctx, const format_specs &
   integral_formatter::format_signed(ctx, specs, as_signed);
 }
 
+// 注册表判定：E_FMT_DERIVE(...) 只声明子命令（sub_count>0）、不带普通字段（count==0）
+// 的结构体。必须用宏钩子 efmt_derive_decl 拿声明原文解析（编译期）：
+// 不能用 aggregate_field_count<T>()==0 —— 带数组成员的结构体同样探测不出字段数
+// （probe 初始化不了数组成员，既有行为），但它的字段是齐全的，要走普通打印。
+template <typename T, typename = void>
+struct is_subcommand_registry : std::false_type {};
+template <typename T>
+struct is_subcommand_registry<
+    T, std::void_t<decltype(efmt_derive_decl(::e_fmt::detail::type_tag<T>{}))>> {
+  static constexpr auto names = ::e_fmt::detail::derive_detail::parse_derived_declaration<
+      EFMT_DERIVE_MAX_FIELDS>(efmt_derive_decl(::e_fmt::detail::type_tag<T>{}));
+  static constexpr bool value = !names.is_enum && names.count == 0 && names.sub_count > 0;
+};
+
+// 注册表打印：零数据成员、只有子命令声明的结构体 → 打印子命令名清单
+template <typename Names>
+void derive_write_registry(const Names &names, format_context &ctx,
+                           const derive_style &style) {
+  open_bracket(ctx, &names, style);
+  for (std::size_t i = 0; i < names.sub_count; ++i) {
+    if (i != 0) ctx.write_str(style.sep);
+    ctx.write_str(names.subs[i].name);
+  }
+  close_bracket(ctx, &names, style);
+}
+
 template <typename T, std::size_t N>
 void format_derived(const T &value, format_context &ctx, const format_specs &specs,
                     const derived_names_t<N> &names) {
   if constexpr (std::is_enum<T>::value) {
     derive_write_enum(value, ctx, specs, names);
+  } else if constexpr (is_subcommand_registry<T>::value) {
+    // 注册表（E_FMT_DERIVE(...) 只声明子命令、不带普通字段）：解构不出成员，
+    // 直接打印子命令名清单（derive_style 打开/闭合 + 子命令名，用字段分隔符相连）。
+    // 注意不能用 aggregate_field_count<T>()==0 判断：带数组成员的结构体也探测
+    // 不出字段数（probe 初始化不了数组成员，这是既有行为），但那类类型字段
+    // 齐全，走普通打印；只有宏解析结果 count==0 且 sub_count>0 才是注册表。
+    write_type_prefix<T>(ctx, " ");
+    derive_write_registry(names, ctx, make_derive_style(specs));
   } else {
     write_type_prefix<T>(ctx, " ");
     derived_printer<N>::run(value, ctx, &names, make_derive_style(specs));
@@ -2329,8 +2525,11 @@ void format_via_field_names(format_context &ctx, const format_specs &specs,
     /* 表长至少 1（零长数组不是标准 C++）。解析失败时 count = 0：上面那条 static_assert   \
        已经报出真正的原因，这里必须让【表长】和 format_derived 的模板实参一致，否则        \
        GCC 会再抛一条 "derived_names_t<1> 转不成 derived_names_t<0>"，把真错误埋掉。    */  \
+    /* 表长 = max(字段数, 子命令数, 1)：注册表（只有子命令、没有普通字段）的  \
+        count 是 0，但 subs 表要装下全部子命令，否则打印清单会漏。                */  \
     constexpr std::size_t efmt_derive_size =                                          \
-        (efmt_derive_count > 0 ? efmt_derive_count : 1);                              \
+        (efmt_derive_count > 0 ? efmt_derive_count :                                 \
+         (efmt_derive_tmp_.sub_count > 0 ? efmt_derive_tmp_.sub_count : 1));        \
     static constexpr auto efmt_derive_names_ =                                        \
         ::e_fmt::detail::derive_detail::parse_derived_declaration<                    \
             efmt_derive_size>(#__VA_ARGS__);                                          \
