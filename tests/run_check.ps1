@@ -304,6 +304,11 @@ if ($Size) {
             $tag = $template.Name -replace '[^A-Za-z0-9]', '_'
             $elf = Join-Path $out "size_$tag.elf"
             $sizeArgs = @('-Os', '-std=c++17', '-ffunction-sections', '-fdata-sections', '-fno-exceptions', '-fno-rtti') + $target.Flags + @("-I$include") + $template.Defines + @((Join-Path $PSScriptRoot $template.Source), '-Wl,--gc-sections', '-o', $elf)
+            # ecli subcommand probe 用到新版 ETL 的 etl/private/... 深 include：
+            # 需要 ETL 仓库 include 根（-I 父目录），否则算法头链会断（新版 ETL 特有）
+            if ($EtlRoot -and -not ($sizeArgs -contains "-I$EtlRoot")) {
+                $sizeArgs += "-I$EtlRoot"
+            }
             & $target.Cxx @sizeArgs
             if ($LASTEXITCODE -eq 0) {
                 $line = (& $target.SizeTool $elf | Select-Object -Skip 1) -join ' '

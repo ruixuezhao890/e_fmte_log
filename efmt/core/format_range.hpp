@@ -209,12 +209,25 @@ private:
 
 // 序列容器（vector, list, deque, set 等）
 // Hook container support into the generic default_formatter path.
+// 新版 ETL 的 etl::string 同时是「容器」且提供 operator<<：若这里不排除流式，
+// 会与 format_traits.hpp 的流式特化（EFMT_ENABLE_STREAM_FALLBACK）同时匹配，
+// 产生 ambiguous template instantiation（旧版 ETL 无 operator<<，只有容器匹配）。
+#if EFMT_ENABLE_STREAM_FALLBACK
+template <typename T>
+struct default_formatter<T, std::enable_if_t<
+    is_container_v<T> &&
+    !is_map_container_v<T> &&
+    !is_tuple_v<T> &&
+    !has_stream_formatter_v<T>
+>> {
+#else
 template <typename T>
 struct default_formatter<T, std::enable_if_t<
     is_container_v<T> &&
     !is_map_container_v<T> &&
     !is_tuple_v<T>
 >> {
+#endif
   static void format(format_context &ctx, const format_specs &specs,
                      const T &value) {
     sequence_formatter<T>::format(ctx, specs, value);
