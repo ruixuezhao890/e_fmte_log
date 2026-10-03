@@ -59,6 +59,15 @@ if (-not $hasEtl) {
 
 $script:failures = 0
 $baseArgs = @('-O2', '-Wall', '-Wextra', "-I$include")
+# ETL 仓库的 include 根（含 etl/ 子目录与 etl/private/… 深 include）：
+# junction 目标只覆盖 middleware/etl → include/etl，ETL 内部还会
+# #include "etl/private/…"，必须再给一个 -I 指向仓库 include 根。
+if ($EtlInclude) {
+    $etlRoot = Split-Path -Parent $EtlInclude
+    if ($etlRoot -and $etlRoot -ne '') {
+        $baseArgs += "-I$etlRoot"
+    }
+}
 
 function Invoke-EfmtBuild {
     param([string]$Name, [string[]]$Arguments)
@@ -86,7 +95,15 @@ function Invoke-EfmtCompileFail {
     Write-Host "=== negative test: $Name ==="
     $previousPreference = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
-    $log = & $Cxx @Arguments 2>&1
+    # g++ 的 static_assert 消息是 UTF-8；PS 5.1 按控制台代码页（GBK）解码会乱码，
+    # 导致 ExpectedPattern 匹配不上（假失败）。捕获期间临时切到 UTF-8 再恢复。
+    $previousEncoding = [Console]::OutputEncoding
+    try {
+        [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+        $log = & $Cxx @Arguments 2>&1
+    } finally {
+        [Console]::OutputEncoding = $previousEncoding
+    }
     $exit = $LASTEXITCODE
     $ErrorActionPreference = $previousPreference
 

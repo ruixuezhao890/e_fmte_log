@@ -207,8 +207,10 @@ static void range_demo() {
       });
   check("ds(1, ooo, 5)：两头固定、中间那段被绑定", ok && size == 3, std::to_string(size));
   const std::array<int, 3> want{2, 3, 4};
-  check("绑定到的 Subrange 可以当面遍历",
-        std::equal((*mid).begin(), (*mid).end(), want.begin()));
+  // 立即遍历绑定（在任何函数调用之前求值：Subrange 指向调用者栈上的 arr，
+  // 跨函数调用后栈内存可能被覆写——「当面」语义就该就地用完）
+  const bool traverseOk = std::equal((*mid).begin(), (*mid).end(), want.begin());
+  check("绑定到的 Subrange 可以当面遍历", traverseOk);
 }
 
 // ============================================================================

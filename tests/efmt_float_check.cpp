@@ -73,14 +73,18 @@ static void fix_host_general_width(char *expected, const char *spec, bool enable
 
   char fixed[4096];
   if (left_align) {
-    std::snprintf(fixed, sizeof(fixed), "%s ", expected);
+    // 不用 snprintf("%s ", …)：glibc 的 -Wformat-truncation 会因 expected 最长 4096
+    // 报「输出可能被截断」的假警告，而本分支只处理"差一个字符"的窄情形。
+    std::strcpy(fixed, expected);
+    std::strcat(fixed, " ");
   } else if (zero_fill) {
     size_t sign = (expected[0] == '-' || expected[0] == '+' || expected[0] == ' ') ? 1u : 0u;
     std::memcpy(fixed, expected, sign);
     fixed[sign] = '0';
     std::strcpy(fixed + sign + 1, expected + sign);
   } else {
-    std::snprintf(fixed, sizeof(fixed), " %s", expected);
+    std::strcpy(fixed, " ");
+    std::strcat(fixed, expected);
   }
   std::strcpy(expected, fixed);
 }
