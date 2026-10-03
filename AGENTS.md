@@ -2,7 +2,7 @@
 
 ### Issue tracker
 
-Issue 与 spec 存放在 GitHub Issues（`ruixuezhao890/e_fmte_log`，用 `gh` CLI 操作）。见 `docs/agents/issue-tracker.md`。
+Issue 与 spec 存放在 GitHub Issues（`ruixuezhao890/efmt-elog`，用 `gh` CLI 操作）。见 `docs/agents/issue-tracker.md`。
 
 ### Triage labels
 

@@ -1,6 +1,6 @@
 # Issue tracker: GitHub
 
-本仓库的 issue 与 spec 存放在 GitHub Issues：`ruixuezhao890/e_fmte_log`。所有操作使用 `gh` CLI。
+本仓库的 issue 与 spec 存放在 GitHub Issues：`ruixuezhao890/efmt-elog`。所有操作使用 `gh` CLI。
 
 > **前置**：本机尚未安装 `gh`（`winget install --id GitHub.cli`），装好后执行 `gh auth login`。未完成这一步，相关技能会直接失败。
 

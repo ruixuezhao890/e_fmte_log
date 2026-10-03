@@ -5,7 +5,7 @@
 - 标签：`pre-derive-args-20260930`
 - 完整备份：`docs/backup/pre_derive_args_20260930.bundle`（`git bundle --all`：含全部分支与标签，11 个 ref）
 - 开发分支：`feat/derive-args-traits`（改造都在这里）
-- 远端：**未推送**（origin = github.com/ruixuezhao890/e_fmte_log.git），等你确认
+- 远端：**未推送**（origin = github.com/ruixuezhao890/efmt-elog.git），等你确认
 
 ## 回滚步骤
 
