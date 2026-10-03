@@ -276,7 +276,7 @@ static void run_blink(const blink_args &a, ecli::reply out) {
 // ③ 命令表里加一行（名字带空格 = 子命令，自动变成两级）
 static constexpr ecli::command kCommands[] = {
     // ...原有那些...
-    {"blink", "闪烁 LED", command_of<blink_args, run_blink>()},
+    {"blink", "闪烁 LED", command_of<blink_args, run_blink>(), help_of<blink_args>()},
 };
 ```
 
@@ -294,9 +294,9 @@ static constexpr ecli::command kCommands[] = {
 ### 子命令与命令名模式段（沙盒里两条活的例子）
 
 ```cpp
-{"net",           "网络概览（子命令的兜底）", command_of<no_args, run_net>()},
-{"net set :ssid", "设置 SSID",               command_of<net_set_args, run_net_set>()},
-{"level :n",      "matchit 分支",            command_of<level_args, run_level>()},
+{"net",           "网络概览（子命令的兜底）", command_of<no_args, run_net>(),           help_of<no_args>()},
+{"net set :ssid", "设置 SSID",               command_of<net_set_args, run_net_set>(),  help_of<net_set_args>()},
+{"level :n",      "matchit 分支",            command_of<level_args, run_level>(),      help_of<level_args>()},
 ```
 
 - 名字带空格 = 子命令；匹配**最长前缀优先** → `net set mynet` 归 `net set :ssid`，裸 `net` 归 `net`；
@@ -388,7 +388,7 @@ if (rx.put(static_cast<char>(c))) {                    // true = 一行到齐
 ## 10. 新手最容易踩的 8 个点（都实测过）
 
 1. **bool 打出来是 `1`/`0`**，不是 `true`/`false`（嵌入式省 Flash 的取舍）。
-2. `E_FMT_DERIVE` 默认**不带类型名**：`{ p = {x=3, y=4}, ts = 9 }`；要 `frame { ... }` 就 `-DEFMT_DERIVE_SHOW_TYPE=1`。
+2. 沙盒构建默认 `EFMT_DERIVE_SHOW_TYPE=1`：`E_FMT_DERIVE` 输出带类型名（`frame { ... }` / `state::x`）；想要不带类型名的省 Flash 档就 `-DEFMT_DERIVE_SHOW_TYPE=0`。
 3. **同一类型不能重复注册**（会重定义 `efmt_derive_format`）；AUTO / FIELDS / DERIVE 三种写法可以混用。
 4. **字段类型名里不能有顶层逗号**：`etl::vector<int, 8>` 先 `using` 一个别名，或改用 `std::vector<int>`。
 5. `elog` 直接调 `logger->info(...)` 时位置信息是 `<unknown>:0 <unknown>`；要 `文件:行 函数` 前缀就用 `ELOG_INFO(...)` 宏。
@@ -404,6 +404,7 @@ if (rx.put(static_cast<char>(c))) {                    // true = 一行到齐
 
 | 文档 | 什么时候看它 |
 |---|---|
+| [libs/](libs/) 下的三份分册：[ECLI](libs/ECLI-使用手册.md) · [ESERDE](libs/ESERDE-使用手册.md) · [MATCHIT](libs/MATCHIT-使用手册.md) | **想动手写代码**看这三份：示例驱动，每段代码都有编译验证 |
 | [EFMT-使用手册.md](EFMT-使用手册.md) | 完整手册（18 章）：格式化 / 日志 / JSON·CBOR / 命令行 / 裁剪宏 / Flash 实测 |
 | 手册 5.10 / 5.11 / 13.9 | ecli 解析器、命令表与模式段、输出通道"一次绑定"的正式说明 |
 | [ECLI-命令行解析-方案.md](ECLI-命令行解析-方案.md) | ecli 的拍板结论、交付物与边界 |

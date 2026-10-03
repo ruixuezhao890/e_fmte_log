@@ -78,13 +78,13 @@ static void sensor_rest_run(const status_args &, reply out) {
 }
 
 static constexpr command kTable[] = {
-    {"wifi", "wifi summary", command_of<status_args, wifi_summary_run>()},
-    {"wifi set :ssid", "set ssid", command_of<wifi_args, wifi_set_run>()},
-    {"log *rest", "log lines", command_of<log_args, log_run>()},
-    {"set :level", "set level", command_of<set_args, set_run>()},
-    {"one *rest", "scalar rest", command_of<scalar_rest_args, scalar_rest_run>()},
-    {"sensor read", "read sensor", command_of<status_args, sensor_read_run>()},
-    {"sensor *rest", "sensor rest", command_of<status_args, sensor_rest_run>()},
+    {"wifi", "wifi summary", command_of<status_args, wifi_summary_run>(), help_of<status_args>()},
+    {"wifi set :ssid", "set ssid", command_of<wifi_args, wifi_set_run>(), help_of<wifi_args>()},
+    {"log *rest", "log lines", command_of<log_args, log_run>(), help_of<log_args>()},
+    {"set :level", "set level", command_of<set_args, set_run>(), help_of<set_args>()},
+    {"one *rest", "scalar rest", command_of<scalar_rest_args, scalar_rest_run>(), help_of<scalar_rest_args>()},
+    {"sensor read", "read sensor", command_of<status_args, sensor_read_run>(), help_of<status_args>()},
+    {"sensor *rest", "sensor rest", command_of<status_args, sensor_rest_run>(), help_of<status_args>()},
 };
 
 static_assert(kTable[1].name == "wifi set :ssid");

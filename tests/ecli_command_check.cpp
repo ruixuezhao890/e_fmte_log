@@ -81,10 +81,10 @@ static reply sink_reply() { return reply_to<uart_write>(); }
 // 命令表：故意同时放 "wifi" 与 "wifi set" —— 用来钉住"最长前缀优先"
 // ---------------------------------------------------------------------------
 static constexpr command kCommands[] = {
-    {"status", "show link status", command_of<status_args, status_run>()},
-    {"wifi", "wifi summary", command_of<status_args, wifi_summary_run>()},
-    {"wifi set", "set ssid / password", command_of<wifi_args, wifi_set_run>()},
-    {"echo", "echo text back", command_of<echo_args, echo_run>()},
+    {"status", "show link status", command_of<status_args, status_run>(), help_of<status_args>()},
+    {"wifi", "wifi summary", command_of<status_args, wifi_summary_run>(), help_of<status_args>()},
+    {"wifi set", "set ssid / password", command_of<wifi_args, wifi_set_run>(), help_of<wifi_args>()},
+    {"echo", "echo text back", command_of<echo_args, echo_run>(), help_of<echo_args>()},
 };
 
 static_assert(kCommands[2].name == "wifi set");
@@ -259,7 +259,7 @@ static void check_reply_channels() {
 
   // 帮助文本比 ECLI_REPLY_BUFFER 还长：必须看得见"(truncated)"，不能静默丢
   {
-    constexpr command big[] = {{"big", kLongAbout, command_of<echo_args, echo_run>()}};
+    constexpr command big[] = {{"big", kLongAbout, command_of<echo_args, echo_run>(), help_of<echo_args>()}};
     std::string text;
     check_error("超长帮助仍返回 help_requested", run_line(big, "big -h", text), error::help_requested);
     check("超长帮助给出 truncated 标记", contains(text, "truncated"), text.substr(0, 80));

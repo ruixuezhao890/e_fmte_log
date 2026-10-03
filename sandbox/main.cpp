@@ -57,9 +57,9 @@ E_FMT_FORMATTER_FIELDS(point, x, y);
 E_FMT_DERIVE_ENUM(enum class state { idle, sampling, fault });
 
 E_FMT_DERIVE(struct person {      // ③ 声明即推导：字段名一个都不用写
-  int age;
-  std::string name;
-  state state;
+  int age=18;
+  std::string name="hello";
+  state state=state::idle;
 }, Debug, Serialize, Deserialize);   //    能力标签：写要 Serialize、读要 Deserialize
 
 static const person kPerson{18, "xiaoming", state::idle};
@@ -78,8 +78,15 @@ E_FMT_DERIVE(struct num_args {
 }, Cli);
 
 E_FMT_DERIVE(struct fmt_args {
-  [[efmt::arg(pos = "1", required, help = "文本，比如 你好 / hello")]] etl::string<16> text;
+  [[efmt::arg(pos = "1", required, help = "文本，比如 你好 / hello")]]
+
+    etl::string<16> text;
 }, Cli);
+
+E_FMT_DERIVE_ENUM(enum class test {
+  hex,
+  h
+});
 
 E_FMT_DERIVE(struct echo_args {
   [[efmt::arg(long = "upper", help = "转成大写")]]           bool upper = false;
@@ -92,7 +99,7 @@ E_FMT_DERIVE(struct log_args {
 
 E_FMT_DERIVE(struct level_args {
   [[efmt::arg(skip)]] int n = -1;   // 数字由命令名模式 "level :n" 捕获，不用写标签
-}, Cli);
+}, Cli,Debug);
 
 // 两段式子命令 "net set :ssid"：ssid 同样由模式段捕获进这个 skip 字段
 E_FMT_DERIVE(struct net_set_args {
@@ -118,7 +125,7 @@ static void replyf(ecli::reply out, std::string_view fmt, const A &...args) {
   char buf[384];
   const std::size_t n = e_fmt::format_to(buf, sizeof(buf), fmt, args...);   // snprintf 语义：返回完整长度
   out.put(std::string_view(buf, n < sizeof(buf) ? n : sizeof(buf) - 1));
-  if (n >= sizeof(buf)) out.put_lit("...(太长，截断了)\n");   // 不静默截断，跟库里的写法一致
+  if (n >= sizeof(buf)) out.put_lit("...(truncated)\n");   // 不静默截断，跟库里的写法一致
 }
 
 static void run_num(const num_args &a, ecli::reply out) {
@@ -250,17 +257,17 @@ static void run_args(const args_args &a, ecli::reply out) {
 // 4. 命令表：名字带空格就是子命令
 // ============================================================================
 static constexpr ecli::command kCommands[] = {
-    {"num", "数字格式化", command_of<num_args, run_num>()},
-    {"fmt", "文本排版", command_of<fmt_args, run_fmt>()},
-    {"me", "自定义类型三种写法", command_of<no_args, run_me>()},
-    {"json", "JSON 写→读", command_of<no_args, run_json>()},
-    {"cbor", "CBOR 写→读", command_of<no_args, run_cbor>()},
-    {"log", "日志（可换级别）", command_of<log_args, run_log>()},
-    {"level :n", "matchit 分支", command_of<level_args, run_level>()},
-    {"net", "网络概览（子命令的兜底）", command_of<no_args, run_net>()},
-    {"net set :ssid", "设置 SSID", command_of<net_set_args, run_net_set>()},
-    {"echo", "回显文本", command_of<echo_args, run_echo>()},
-    {"args", "完整选项集", command_of<args_args, run_args>()},
+    {"num", "数字格式化", command_of<num_args, run_num>(), help_of<num_args>()},
+    {"fmt", "文本排版", command_of<fmt_args, run_fmt>(), help_of<fmt_args>()},
+    {"me", "自定义类型三种写法", command_of<no_args, run_me>(), help_of<no_args>()},
+    {"json", "JSON 写→读", command_of<no_args, run_json>(), help_of<no_args>()},
+    {"cbor", "CBOR 写→读", command_of<no_args, run_cbor>(), help_of<no_args>()},
+    {"log", "日志（可换级别）", command_of<log_args, run_log>(), help_of<log_args>()},
+    {"level :n", "matchit 分支", command_of<level_args, run_level>(), help_of<level_args>()},
+    {"net", "网络概览（子命令的兜底）", command_of<no_args, run_net>(), help_of<no_args>()},
+    {"net set :ssid", "设置 SSID", command_of<net_set_args, run_net_set>(), help_of<net_set_args>()},
+    {"echo", "回显文本", command_of<echo_args, run_echo>(), help_of<echo_args>()},
+    {"args", "完整选项集", command_of<args_args, run_args>(), help_of<args_args>()},
 };
 
 static constexpr const char *kVersion = "0.1.0-sandbox";
@@ -366,10 +373,17 @@ int main(int argc, char **argv) {
   e_log::logger *const log =
       e_log::create_logger("sandbox", e_log::stdout_sink(), e_log::level::debug);
   if (log == nullptr) {
-    std::printf("create_logger failed\n");   // 日志都建不起来时，只能退回 printf
+    std::printf("create_logger failed\n"); // 日志都建不起来时，只能退回 printf
     return 1;
   }
-
+  const level_args s;
+  const person p;
+  fmt_args d{"nihao shijie"};
+  test t = test::hex;
+  ELOG_INFO(" {:#}",s);
+  ELOG_INFO(" {:#}",p);
+  ELOG_INFO(" {:#}",d);
+  ELOG_INFO(" {:#}",t);
   if (argc > 1) {
     const std::string_view mode(argv[1]);
     if (mode == "--check") return run_smoke();

@@ -38,8 +38,8 @@ static void status_run(const status_args &a, reply out) {
 static void big_run(const big_args &, reply out) { out.put_lit("big\n"); }
 
 static constexpr command kCommands[] = {
-    {"status", "show link status", command_of<status_args, status_run>()},
-    {"big", "multi-line help", command_of<big_args, big_run>()},
+    {"status", "show link status", command_of<status_args, status_run>(), help_of<status_args>()},
+    {"big", "multi-line help", command_of<big_args, big_run>(), help_of<big_args>()},
 };
 
 // ---- elog 的 sink：走它自己的 (data, size, user_data) 回调，user_data 也照传 ----

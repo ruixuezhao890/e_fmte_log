@@ -102,10 +102,12 @@ shell 补全、env 回退、自定义 value_parser、`nargs` 多值、嵌套结�
 
 ## 8. 阶段二：命令表 + 子命令（已交付）
 
-`ecli/command.hpp`：命令表是 `constexpr` 静态数组 `{name, help, invoke}`，
+`ecli/command.hpp`：命令表是 `constexpr` 静态数组 `{name, help, invoke, help_of}`，
 **命令名带空格就是子命令**，匹配用**最长 token 前缀**（`"wifi set x"` 命中 `"wifi set"` 而不是
 `"wifi"`）—— 没有树、没有插值、没有 `new`。每个命令一个自包含 thunk
 （由 `command_of<Args, Fn>()` 生成）：自己声明参数类型、自己 `parse`、自己把帮助/报错写回 reply。
+第四字段 `help_of<Args>()` 是帮助专用 thunk（`help <命令>` 直达，不解析、不执行处理函数）；
+缺第四字段的旧调用点由聚合初始化补 `nullptr`，自动退回借 `-h` 通道的旧路径。
 
 - 处理函数签名统一 `void(const Args &, reply)`；reply 两指针（ctx + 写函数），
   提供 `reply_to<uart_write>()` / `buffer_reply` / `stdout_reply()` / `string_reply()` / 空 reply。

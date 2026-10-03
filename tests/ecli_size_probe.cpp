@@ -45,8 +45,8 @@ static void status_run(const status_args &, ecli::reply out) { out.put_lit("ok\n
 static void wifi_run(const wifi_args &, ecli::reply) {}
 
 static constexpr ecli::command kCmds[] = {
-    {"status", "show status", ecli::command_of<status_args, status_run>()},
-    {"wifi set", "set ssid", ecli::command_of<wifi_args, wifi_run>()},
+    {"status", "show status", ecli::command_of<status_args, status_run>(), ecli::help_of<status_args>()},
+    {"wifi set", "set ssid", ecli::command_of<wifi_args, wifi_run>(), ecli::help_of<wifi_args>()},
 };
 #endif
 
@@ -58,7 +58,7 @@ E_FMT_DERIVE(struct set_args {
 static void set_run(const set_args &, ecli::reply out) { out.put_lit("ok\n"); }
 
 static constexpr ecli::command kPatCmds[] = {
-    {"set :level", "set level", ecli::command_of<set_args, set_run>()},
+    {"set :level", "set level", ecli::command_of<set_args, set_run>(), ecli::help_of<set_args>()},
 };
 #endif
 

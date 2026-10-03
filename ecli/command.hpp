@@ -3,7 +3,7 @@
  * @file           : command.hpp
  * @author         : ruixuezhao
  * @brief          : ecli 的命令表：多命令 / 子命令分发 + 输出回给"发起命令的那一路"
- * @attention      : 依赖方向：command.hpp → cli.hpp → eserde/traits.hpp → efmt。
+ * @attention      : 依赖方向：command.hpp → cli.hpp → { reply.hpp, eserde/traits.hpp } → efmt。
  *
  *                   设计只用三句话就能说完：
  *                     1. 命令表是一个【零堆静态数组】：{名字, 帮助, 处理函数 thunk}
@@ -11,8 +11,6 @@
  *                        【模式段】："wifi set :ssid"（一个 token → 捕获成 ssid）、
  *                        "log *rest"（余下 token 全收）。匹配规则是
  *                        【段特异性优先，再比 token 数】，所以不需要树、不需要 new
- *                     3. 每个命令一个自包含 thunk：自己声明参数类型、自己 parse、
- *                        自己把帮助/报错写回 reply；参数类型仍然由 E_FMT_DERIVE 推导
  *                     3. 每个命令一个自包含 thunk：自己声明参数类型、自己 parse、
  *                        自己把帮助/报错写回 reply；参数类型仍然由 E_FMT_DERIVE 推导
  *
@@ -24,8 +22,10 @@
  *                     void set_run(const wifi_args& a, ecli::reply) { ... }
  *
  *                     constexpr ecli::command kCommands[] = {
- *                       {"status",   "show link status", ecli::command_of<status_args, status_run>()},
- *                       {"wifi set", "set ssid",         ecli::command_of<wifi_args, set_run>()},
+ *                       {"status",   "show link status", ecli::command_of<status_args, status_run>(),
+ *                                                        ecli::help_of<status_args>()},
+ *                       {"wifi set", "set ssid",         ecli::command_of<wifi_args, set_run>(),
+ *                                                        ecli::help_of<wifi_args>()},
  *                     };
  *
  *                     ecli::line_reader<128> line;      // 或 argv
@@ -60,86 +60,7 @@
 #include <optional>
 #endif
 
-#if EFMT_ENABLE_STDIO
-#include <cstdio>
-#endif
-
-#if EFMT_ENABLE_DYNAMIC_STRING
-#include <string>
-#endif
-
-// 帮助 / 报错文本的栈缓冲。装不下会如实追加 "...(truncated)"，不静默截断。
-#ifndef ECLI_REPLY_BUFFER
-#define ECLI_REPLY_BUFFER 384
-#endif
-
 namespace ecli {
-
-// ---------------------------------------------------------------------------
-// 回复通道：命令的输出回给"发起命令的那一路"
-// ---------------------------------------------------------------------------
-// 两个指针（上下文 + 写函数），零堆、可拷贝、可空（空 = 丢弃输出）。
-struct reply {
-  void *ctx = nullptr;
-  void (*write)(void *ctx, const char *data, std::size_t size) = nullptr;
-
-  void put(std::string_view text) const {
-    if (write != nullptr && !text.empty()) write(ctx, text.data(), text.size());
-  }
-  void put_lit(const char *text) const { put(std::string_view(text)); }
-  bool valid() const { return write != nullptr; }
-};
-
-namespace detail {
-template <void (*Sink)(const char *, std::size_t)> struct sink_thunk {
-  static void call(void *, const char *data, std::size_t size) { Sink(data, size); }
-};
-}  // namespace detail
-
-// 嵌入式最常用的一种：库直接调你的 (data, size) 写函数（UART / RTT / 环形缓冲都行）
-//   ecli::dispatch(kCommands, line.line(), scratch, sizeof(scratch),
-//                  ecli::reply_to<uart_write>());
-template <void (*Sink)(const char *, std::size_t)> inline reply reply_to() {
-  return reply{nullptr, &detail::sink_thunk<Sink>::call};
-}
-
-// 写进一块定长缓冲（snprintf 语义：超出只计数，永远 NUL 结尾）
-struct buffer_reply {
-  char *buf = nullptr;
-  std::size_t cap = 0;
-  std::size_t used = 0;
-
-  void write(std::string_view text) {
-    for (std::size_t i = 0; i < text.size(); ++i) {
-      if (used + 1 < cap) buf[used] = text[i];
-      ++used;
-    }
-    if (cap != 0) buf[used < cap ? used : cap - 1] = '\0';
-  }
-  reply as_reply();   // 定义在下面（要先有 buffer_reply_write 的声明）
-};
-
-namespace detail {
-inline void buffer_reply_write(void *ctx, const char *data, std::size_t size) {
-  static_cast<ecli::buffer_reply *>(ctx)->write(std::string_view(data, size));
-}
-}  // namespace detail
-
-inline reply buffer_reply::as_reply() { return reply{this, &detail::buffer_reply_write}; }
-
-#if EFMT_ENABLE_STDIO
-inline void stdout_sink(const char *data, std::size_t size) { std::fwrite(data, 1, size, stdout); }
-inline reply stdout_reply() { return reply_to<stdout_sink>(); }
-#endif
-
-#if EFMT_ENABLE_DYNAMIC_STRING
-namespace detail {
-inline void string_reply_write(void *ctx, const char *data, std::size_t size) {
-  static_cast<std::string *>(ctx)->append(data, size);
-}
-}  // namespace detail
-inline reply string_reply(std::string &out) { return reply{&out, &detail::string_reply_write}; }
-#endif
 
 // ---------------------------------------------------------------------------
 // 命令名模式里捕获到的东西
@@ -206,6 +127,10 @@ struct command {
   std::string_view name;
   std::string_view help;   // 命令表与 help <命令> 里显示的说明
   invoke_fn invoke;        // 由 command_of<Args, Fn>() 生成的自包含 thunk
+  // 帮助专用 thunk（C2）：help <命令> 走这条，不解析不执行处理函数。
+  // 由 help_of<Args>() 生成；四字段初始化缺席时聚合初始化补 nullptr，
+  // dispatch 退化为借 -h 通道（旧调用点行为不变）。
+  invoke_fn help_of;
 };
 
 namespace detail {
@@ -345,34 +270,6 @@ inline std::size_t match_command_prefix(std::string_view name, const token_list 
   return k == tokens.count ? spec : 0;   // 用户给的 token 必须全用上
 }
 
-// 写文本：装不下就如实追加 "(truncated)" —— 标记要【先留出位置】，
-// 否则正文把缓冲填满，标记自己反而塞不进去（第一版就是这么错的）。
-inline void send_text(std::size_t need, const char *buf, std::size_t cap, reply out) {
-  if (cap == 0) return;
-  if (need < cap) {
-    out.put(std::string_view(buf, need));
-    return;
-  }
-  constexpr std::string_view kMark = "...(truncated)\n";
-  const std::size_t keep = cap > kMark.size() + 1 ? cap - kMark.size() - 1 : 0;
-  out.put(std::string_view(buf, keep));
-  out.put(kMark);
-}
-
-template <typename T>
-void send_help(std::string_view name, std::string_view about, reply out) {
-  char buf[ECLI_REPLY_BUFFER];
-  const std::size_t need = write_help<T>(name, about, buf, sizeof(buf));
-  send_text(need, buf, sizeof(buf), out);
-}
-
-template <typename T>
-void send_error(std::string_view name, error e, const error_info &info, reply out) {
-  char buf[ECLI_REPLY_BUFFER];
-  const std::size_t need = write_error<T>(name, e, info, buf, sizeof(buf));
-  send_text(need, buf, sizeof(buf), out);
-}
-
 // 命令名模式捕获到的值 → 按名字注入参数结构体的同名字段
 //   找不到同名字段：跳过（值仍在 params 里，处理函数能看见）
 //   *name → 只注入容器字段（逐个 push）；标量字段不注入（免得"最后一个赢"这种意外）
@@ -422,9 +319,11 @@ error inject_captures(Args &obj, const params &p, error_info &info) {
 }
 
 // 每个命令的自包含 thunk：声明参数类型 → 解析参数 → 注入捕获 → 回话 → 交给处理函数
-template <typename Args, void (*Fn)(const Args &, reply)>
-error command_thunk(std::string_view name, std::string_view about, const params &p,
-                    const token_list &tokens, reply out) {
+// 主体只有一份（C3）：WithParams=false → Fn(a, out)；=true → Fn(a, p, out)
+// （想看模式捕获的原始值走后一种签名）。下面两个薄包装只按 Fn 签名选开关。
+template <typename Args, bool WithParams, auto Fn>
+error command_thunk_run(std::string_view name, std::string_view about, const params &p,
+                        const token_list &tokens, reply out) {
   Args a{};
   error_info info{};
   const error e = parse(tokens, a, &info);
@@ -441,32 +340,36 @@ error command_thunk(std::string_view name, std::string_view about, const params 
     send_error<Args>(name, ie, info, out);
     return ie;
   }
-  Fn(a, out);
+  if constexpr (WithParams) {
+    Fn(a, p, out);
+  } else {
+    Fn(a, out);
+  }
   return error::ok;
 }
 
-// 想看原始捕获值的处理函数走这版：Fn(const Args&, const params&, reply)
+// 薄包装 A：处理函数签名 void(const Args&, reply)
+template <typename Args, void (*Fn)(const Args &, reply)>
+error command_thunk(std::string_view name, std::string_view about, const params &p,
+                    const token_list &tokens, reply out) {
+  return command_thunk_run<Args, false, Fn>(name, about, p, tokens, out);
+}
+
+// 薄包装 B：处理函数签名 void(const Args&, const params&, reply)（想看原始捕获值）
 template <typename Args, void (*Fn)(const Args &, const params &, reply)>
 error command_thunk_with_params(std::string_view name, std::string_view about, const params &p,
                                 const token_list &tokens, reply out) {
-  Args a{};
-  error_info info{};
-  const error e = parse(tokens, a, &info);
-  if (e == error::help_requested) {
-    send_help<Args>(name, about, out);
-    return e;
-  }
-  if (e != error::ok) {
-    send_error<Args>(name, e, info, out);
-    return e;
-  }
-  const error ie = inject_captures(a, p, info);
-  if (ie != error::ok) {
-    send_error<Args>(name, ie, info, out);
-    return ie;
-  }
-  Fn(a, p, out);
-  return error::ok;
+  return command_thunk_run<Args, true, Fn>(name, about, p, tokens, out);
+}
+
+// 帮助专用 thunk（C2）：不 parse、不注入捕获、不执行处理函数 —— 直接给帮助。
+// dispatch 的 help <命令…> 优先走这条，不再伪造 -h 借 parse 的 help_requested 通道。
+// 旧调用点没有 help_of（聚合初始化缺省为 nullptr）时 dispatch 退化回借 -h 通道。
+template <typename Args>
+error command_help_thunk(std::string_view name, std::string_view about, const params &,
+                         const token_list &, reply out) {
+  send_help<Args>(name, about, out);
+  return error::help_requested;
 }
 
 }  // namespace detail
@@ -481,6 +384,13 @@ inline constexpr invoke_fn command_of() {
 template <typename Args, void (*Fn)(const Args &, const params &, reply)>
 inline constexpr invoke_fn command_of() {
   return &detail::command_thunk_with_params<Args, Fn>;
+}
+
+// 帮助专用 thunk（C2）：命令表第四字段 help_of<Args>()。
+// 不解析参数、不注入捕获、不执行处理函数 —— help <命令> 拿到的就是纯帮助文本。
+template <typename Args>
+inline constexpr invoke_fn help_of() {
+  return &detail::command_help_thunk<Args>;
 }
 
 // ---------------------------------------------------------------------------
@@ -566,11 +476,17 @@ error dispatch(const command (&table)[N], const token_list &tokens, reply out) {
       write_command_list(table, out);
       return error::unknown_command;
     }
+    // 帮助走命令自带的 help_of 专用 thunk（C2）：不解析参数、不注入捕获、
+    // 不执行处理函数。旧调用点四字段缺席（help_of 聚合初始化为 nullptr）
+    // 时退化为借 -h 通道（行为不变）。
+    params none{};   // 帮助路径不做捕获，也不注入
+    if (table[best].help_of != nullptr) {
+      return table[best].help_of(table[best].name, table[best].help, none, token_list{}, out);
+    }
     // 借命令自己的 -h 通道拿帮助：不执行处理函数，也不用给 thunk 加分支
     token_list help_tokens{};
     help_tokens.items[0] = std::string_view("-h");
     help_tokens.count = 1;
-    params none{};   // 帮助路径不做捕获，也不注入
     return table[best].invoke(table[best].name, table[best].help, none, help_tokens, out);
   }
 

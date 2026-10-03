@@ -39,6 +39,8 @@
 #ifndef ECLI_CLI_HPP
 #define ECLI_CLI_HPP
 
+#include <ecli/reply.hpp>
+
 #include <eserde/traits.hpp>
 
 #include <array>
@@ -1572,40 +1574,68 @@ std::size_t write_error(std::string_view app, error e, const error_info &info, c
 #endif
 }
 
+// ---------------------------------------------------------------------------
+// 产文本 + 送达（C1 起的窄接口）：一行把 write_* 的文本送回 reply 通道。
+// 自持 ECLI_REPLY_BUFFER 栈缓冲，装不下如实追加 "...(truncated)"，不静默截断。
+// 返回 snprintf 语义的"完整长度"：返回值 ≤ ECLI_REPLY_BUFFER 就是完整送达；
+// 超过说明截断了（差多少 = 返回值 - ECLI_REPLY_BUFFER，可以加大缓冲重发）。
+// 嵌入式直接接 reply_to<uart_write>() / stdout_reply()；
+// 宿主想要 std::string 就用 string_reply —— 下面 *_string 就是它的薄封装。
+// ---------------------------------------------------------------------------
+inline std::size_t send_version(std::string_view app, std::string_view version, reply out) {
+  char buf[ECLI_REPLY_BUFFER];
+  const std::size_t need = write_version(app, version, buf, sizeof(buf));
+  return detail::send_text(need, buf, sizeof(buf), out);
+}
+
+template <typename T>
+std::size_t send_usage(std::string_view app, reply out) {
+  char buf[ECLI_REPLY_BUFFER];
+  const std::size_t need = write_usage<T>(app, buf, sizeof(buf));
+  return detail::send_text(need, buf, sizeof(buf), out);
+}
+
+template <typename T>
+std::size_t send_help(std::string_view app, std::string_view about, reply out) {
+  char buf[ECLI_REPLY_BUFFER];
+  const std::size_t need = write_help<T>(app, about, buf, sizeof(buf));
+  return detail::send_text(need, buf, sizeof(buf), out);
+}
+
+template <typename T>
+std::size_t send_error(std::string_view app, error e, const error_info &info, reply out) {
+  char buf[ECLI_REPLY_BUFFER];
+  const std::size_t need = write_error<T>(app, e, info, buf, sizeof(buf));
+  return detail::send_text(need, buf, sizeof(buf), out);
+}
+
 #if EFMT_ENABLE_DYNAMIC_STRING
-// 宿主便利版：直接拿 std::string（嵌入式没有 std::string，所以按开关裁剪）
+// 宿主便利版：send_* + string_reply 的薄封装（API 不变；文本超过
+// ECLI_REPLY_BUFFER 时同样如实截断 —— 与 send_* 同语义）
 inline std::string version_string(std::string_view app, std::string_view version) {
-  const std::size_t need = write_version(app, version, nullptr, 0);
-  std::string out(need + 1, '\0');
-  write_version(app, version, &out[0], need + 1);
-  out.resize(need);
+  std::string out;
+  send_version(app, version, string_reply(out));
   return out;
 }
 
 template <typename T>
 std::string usage_string(std::string_view app) {
-  const std::size_t need = write_usage<T>(app, nullptr, 0);
-  std::string out(need + 1, '\0');
-  write_usage<T>(app, &out[0], need + 1);
-  out.resize(need);
+  std::string out;
+  send_usage<T>(app, string_reply(out));
   return out;
 }
 
 template <typename T>
 std::string help_string(std::string_view app, std::string_view about = {}) {
-  const std::size_t need = write_help<T>(app, about, nullptr, 0);
-  std::string out(need + 1, '\0');
-  write_help<T>(app, about, &out[0], need + 1);
-  out.resize(need);
+  std::string out;
+  send_help<T>(app, about, string_reply(out));
   return out;
 }
 
 template <typename T>
 std::string error_string(std::string_view app, error e, const error_info &info) {
-  const std::size_t need = write_error<T>(app, e, info, nullptr, 0);
-  std::string out(need + 1, '\0');
-  write_error<T>(app, e, info, &out[0], need + 1);
-  out.resize(need);
+  std::string out;
+  send_error<T>(app, e, info, string_reply(out));
   return out;
 }
 #endif
