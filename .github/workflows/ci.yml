@@ -31,12 +31,19 @@ jobs:
       # 宿主自带 pwsh 7；xtensa-esp32-elf-g++ 未安装时体积探针自动跳过（不红）。
       # 失败时把日志尾部以 ::error:: 注解导出（check-run annotations 公开可读，便于排查）。
       - name: Run full check suite
+        shell: bash
         run: |
-          pwsh ./tests/run_check.ps1 -Size | tee /tmp/ci.log
-          ec=${PIPESTATUS[0]}
+          set +e
+          echo "== pwsh probe =="
+          pwsh --version
+          echo "== run =="
+          pwsh ./tests/run_check.ps1 -Size > /tmp/ci.log 2>&1
+          ec=$?
+          set -e
+          echo "== exit=$ec =="
           if [ $ec -ne 0 ]; then
-            tail -n 60 /tmp/ci.log | sed 's/%/%25/g; s/\r//g' | while IFS= read -r line; do echo "::error::$line"; done
-            info=$(tail -n 16 /tmp/ci.log | tr '\n' '|' | sed 's/"/_/g' | head -c 130)
+            { echo "== tail start =="; tail -n 80 /tmp/ci.log; } | sed 's/%/%25/g; s/\r//g' | while IFS= read -r line; do echo "::error::$line"; done
+            info=$(tail -n 16 /tmp/ci.log | tr '\n' '|' | sed 's/"/_/g' | head -c 120)
             curl -s -X POST -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" \
               https://api.github.com/repos/${{ github.repository }}/statuses/${{ github.sha }} \
               -d "{\"state\":\"failure\",\"context\":\"ci/tail\",\"description\":\"$info\"}"
