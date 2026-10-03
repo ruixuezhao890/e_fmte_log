@@ -60,7 +60,9 @@ E_FMT_DERIVE_ENUM(enum class state { idle, sampling, fault });
 E_FMT_DERIVE(struct person {      // ③ 声明即推导：字段名一个都不用写
   int age=18;
   std::string name="hello";
-  state state=state::idle;
+  // 字段名与类型同名（state state=…）会触发 GCC 14 的 -Wchanges-meaning 硬错误，
+  // 这里用 status 规避（GCC 15 不报，CI 的 ubuntu g++ 14 报）
+  state status = state::idle;
 }, Debug, Serialize, Deserialize);   //    能力标签：写要 Serialize、读要 Deserialize
 
 static const person kPerson{18, "xiaoming", state::idle};

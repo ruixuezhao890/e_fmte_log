@@ -258,6 +258,11 @@ $failChecks = @(
 
 foreach ($f in $failChecks) {
     if (-not (Test-CheckPrereq $f.Prereq)) { continue }
+    # 负例的 Args 是写死的（-I tests/include、-I 仓库根），不含 ETL include 根；
+    # 新版 ETL 的算法头有 #include "etl/private/..." 深 include，缺了会 fatal
+    if ($EtlRoot -and -not ($f.Args -contains "-I$EtlRoot")) {
+        $f.Args += "-I$EtlRoot"
+    }
     Invoke-EfmtCompileFail -Name $f.Name -ExpectedPattern $f.Pattern -Arguments $f.Args
 }
 

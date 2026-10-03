@@ -195,10 +195,16 @@ static void range_demo() {
   std::array<int, 5> arr{1, 2, 3, 4, 5};
   Id<SubrangeT<std::array<int, 5>>> mid;
   int size = -1;
+  bool traverseOk = false;
   // 每条分支都返回 bool → 表达式形式可以接住结果（有一条返回 void 就得走语句形式）
   const bool ok = match(arr)(
       pattern | ds(1, mid.at(ooo), 5) = [&] {
         size = static_cast<int>((*mid).size());
+        // 立即遍历绑定（不跨函数调用）：Subrange 指向调用者栈上的 arr，match 返回后
+        // -O2 下的优化器可能复用 arr 的栈槽（GCC 14 实测会在 CI 上覆写内容）。
+        // 「当面」语义就该在分支内就地用完。
+        const std::array<int, 3> want{2, 3, 4};
+        traverseOk = std::equal((*mid).begin(), (*mid).end(), want.begin());
         return true;
       },
       pattern | _ = [&] {
@@ -206,10 +212,6 @@ static void range_demo() {
         return false;
       });
   check("ds(1, ooo, 5)：两头固定、中间那段被绑定", ok && size == 3, std::to_string(size));
-  const std::array<int, 3> want{2, 3, 4};
-  // 立即遍历绑定（在任何函数调用之前求值：Subrange 指向调用者栈上的 arr，
-  // 跨函数调用后栈内存可能被覆写——「当面」语义就该就地用完）
-  const bool traverseOk = std::equal((*mid).begin(), (*mid).end(), want.begin());
   check("绑定到的 Subrange 可以当面遍历", traverseOk);
 }
 
