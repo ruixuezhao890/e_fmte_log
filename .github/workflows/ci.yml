@@ -29,5 +29,12 @@ jobs:
       # 全量：host c++17/c++20 行为检查 + 浮点对拍 + E_FMT_DERIVE/eserde/ecli/elog 集成
       # + 14 项编译期负例 + sandbox 冒烟 + -Size 交叉体积读数。
       # 宿主自带 pwsh 7；xtensa-esp32-elf-g++ 未安装时体积探针自动跳过（不红）。
+      # 失败时把日志尾部以 ::error:: 注解导出（check-run annotations 公开可读，便于排查）。
       - name: Run full check suite
-        run: pwsh ./tests/run_check.ps1 -Size
+        run: |
+          pwsh ./tests/run_check.ps1 -Size | tee /tmp/ci.log
+          ec=${PIPESTATUS[0]}
+          if [ $ec -ne 0 ]; then
+            tail -n 60 /tmp/ci.log | sed 's/%/%25/g; s/\r//g' | while IFS= read -r line; do echo "::error::$line"; done
+          fi
+          exit $ec
